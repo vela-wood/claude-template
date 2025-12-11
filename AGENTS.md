@@ -12,7 +12,7 @@
 ## 2. Rules
 
 - Do not guess about the file system; inspect it using command-line tools.
-- Do not hallucinate facts or law. If information is not in the provided materials, say so.
+- Do not hallucinate facts or law. If information is missing, say so.
 - If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
 - Explain your reasoning at a professional level: structured, cite to specific documents/sections when possible.
 - Assume the user can handle technical details; do not oversimplify or “educate” unless asked.
@@ -20,23 +20,25 @@
 ## 3. Startup procedure for every task
 
 1. **Identify the working folder**
-   - Treat the current working directory (`$PWD`) as the active matter folder.
-   - Let `folder_name` = `basename $PWD`.
+   - Treat $PWD as the active matter folder; let matter_name = basename $PWD (used for journals and cass workspaces).
 
 2. **Inspect the journal directory**
    - List `~/legal/_journal/`.
-   - Look for files whose names appear related to the current matter or task (e.g., containing `folder_name`, client name, or topic).
-   - If a journal file appears relevant based on its filename, open and read it. Do not read more than `3` journal entries without permission from the user.
-
+   - The _journal folder aggregates entries from all legal matters, not just the active matter.
+   - Filenames will follow this syntax: `{matter_name}_{yyyymmdd}_{taskdescription}.md`
+   - Identify files which appear related to the current matter or task by filename and read them.
+   - Relevance includes similar tasks across different matters.
+   - Read up to 3 journal entries before asking the user for permission to read additional ones.
+   
 3. **Incorporate prior context**
    - Briefly summarize any relevant prior work, decisions, or user preferences from those journal entries.
    - If nothing seems relevant, state that explicitly and proceed.
 
 4. **Offer cass (chat-history search) when appropriate**
-   - If a journal entry suggests there has been significant prior discussion or related tasks in this matter, ask:
-     - “There appears to be prior work related to this matter in the journals. Do you want me to run `cass --search {search_string} --workspace {folder_name} --robot` to search chat history? I will not run it unless you confirm.”
+   - If a journal entry suggests the actual chat-history will provide additional useful information over the summary, ask:
+     - “Would you like me to run `cass --search {search_string} --workspace {matter_name} --robot` to search the relevant chat history?”
    - Never run `cass` without explicit user confirmation.
-   - Never run plain `cass` without the `--workspace {folder_name}` and `--robot` flags.
+   - Never run plain `cass` without the `--workspace {matter_name}` and `--robot` flags.
 
 Then proceed to the main task.
 
@@ -104,7 +106,19 @@ Procedure:
   - Asking the user for permission, as described above.
 - When the user consents:
   - Run:
-    - `cass --search {search_query} --workspace {folder_name_from_journal_file} --robot`
+    - `cass --search {search_query} --workspace {matter_name} --robot`
+
+### 4.6 count_tokens (token counting)
+
+Use `count_tokens.py` to check token counts before sending large files or prompts to LLMs.
+
+- Run: `uv run python count_tokens.py <file>`
+- Add `-v` for verbose output (tokens, characters, words, lines)
+- Available encodings (`-e` flag):
+  - `cl100k_base` (default) — GPT-4, Claude
+  - `o200k_base` — GPT-4o
+  - `p50k_base`, `r50k_base` — older models
+
 ---
 
 ## 5. File discovery and selection
@@ -127,7 +141,8 @@ When you need to find relevant files:
      - Any term sheets, engagement letters, or instructions.
      - Existing drafts or redlines.
      - Underlying agreements or pleadings.
-   - For large files, skim headings first and then zoom in on sections relevant to the user’s stated task.
+   - When reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
+   - When reading a markdown file in its entirety not using the Explore agent, if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
 
 ---
 
@@ -174,8 +189,8 @@ After performing any task:
 
 1. **Determine journal filename**
    - The journal file path must be:
-     - `~/legal/_journal/{folder_name}_{yyyymmdd}_{taskdescription}.md`
-   - `folder_name`: `basename $PWD` (the current working folder).
+     - `~/legal/_journal/{matter_name}_{yyyymmdd}_{taskdescription}.md`
+   - `matter_name`: `basename $PWD` (the matter name is that of the current working folder).
    - `yyyymmdd`: current date in `YYYYMMDD` format.
    - `taskdescription`: short, snake_case descriptor of the task (e.g., `msa_redraft`, `discovery_responses`, `corporate_cleanup`).
 
