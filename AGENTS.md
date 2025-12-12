@@ -11,7 +11,7 @@
 
 ## 2. Rules
 
-- Do not guess about the file system; inspect it using command-line tools.
+- Do not guess about the file system, always inspect it using command line tools, e.g., `find`, `fd`, `ls`, `osgrep`.
 - Do not hallucinate facts or law. If information is missing, say so.
 - If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
 - Explain your reasoning at a professional level: structured, cite to specific documents/sections when possible.
@@ -41,8 +41,6 @@
    - Never run plain `cass` without the `--workspace {matter_name}` and `--robot` flags.
 
 Then proceed to the main task.
-
----
 
 ## 4. Tooling rules
 
@@ -114,19 +112,13 @@ Use `count_tokens.py` to check token counts before sending large files or prompt
 
 - Run: `uv run python count_tokens.py <file>`
 - Add `-v` for verbose output (tokens, characters, words, lines)
-- Available encodings (`-e` flag):
-  - `cl100k_base` (default) — GPT-4, Claude
-  - `o200k_base` — GPT-4o
-  - `p50k_base`, `r50k_base` — older models
-
----
 
 ## 5. File discovery and selection
 
 When you need to find relevant files:
 
 1. **Search instead of guessing**
-   - Use command-line tools (e.g., `find`, `fd`, `rg`, `ls`, `osgrep`) to:
+   - Use command-line tools (e.g., `find`, `fd`, `ls`, `osgrep`) to:
      - Enumerate files in the current folder and subfolders.
      - Search for key parties, dates, or issues.
 
@@ -143,8 +135,6 @@ When you need to find relevant files:
      - Underlying agreements or pleadings.
    - When reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
    - When reading a markdown file in its entirety not using the Explore agent, if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
-
----
 
 ## 6. Standard workflow for legal tasks
 
@@ -181,8 +171,6 @@ For any substantial task (drafting, revising, analyzing):
 6. **Journaling**
    - Update or create a journal entry as described below.
 
----
-
 ## 7. Journaling protocol
 
 After performing any task:
@@ -213,8 +201,6 @@ After performing any task:
 
 4. **Summarize back to the user**
    - At the end of your response, provide a concise textual summary of what was logged so the user can see, in plain language, what went into the journal.
-
----
 
 ## 8. When unsure
 
