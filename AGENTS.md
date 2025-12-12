@@ -11,8 +11,9 @@
 
 ## 2. Rules
 
-- Do not guess about the file system, always inspect it using command line tools, e.g., `find`, `fd`, `ls`, `osgrep`.
+- Do not guess about the file system, always inspect it using command line tools (e.g., `osgrep`, `ls`, `find`, `rg`).
 - Do not hallucinate facts or law. If information is missing, say so.
+- Freely ask the user for clarification.
 - If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
 - Explain your reasoning at a professional level: structured, cite to specific documents/sections when possible.
 - Assume the user can handle technical details; do not oversimplify or “educate” unless asked.
@@ -37,8 +38,8 @@
 4. **Offer cass (chat-history search) when appropriate**
    - If a journal entry suggests the actual chat-history will provide additional useful information over the summary, ask:
      - “Would you like me to run `cass --search {search_string} --workspace {matter_name} --robot` to search the relevant chat history?”
-   - Never run `cass` without explicit user confirmation.
-   - Never run plain `cass` without the `--workspace {matter_name}` and `--robot` flags.
+   - Never run `cass` without first confirming with the user.
+   - Never run `cass` without the `--workspace {matter_name}` and `--robot` flags.
 
 Then proceed to the main task.
 
@@ -60,7 +61,7 @@ Procedure:
 1. **Preferred input = already-converted markdown**
    - Before running `markitdown`, check if a markdown version exists:
      - For `foo.pdf`, look for `foo.pdf.md`.
-   - If the `.md` file exists and you do not have reason to believe the source changed, read the `.md` instead of reconverting.
+   - If the `.md` file exists, read the `.md` instead of reconverting.
 
 2. **Conversion when needed**
    - If the `.md` file does not exist, run:
@@ -108,17 +109,14 @@ Procedure:
 
 ### 4.6 count_tokens (token counting)
 
-Use `count_tokens.py` to check token counts before sending large files or prompts to LLMs.
-
-- Run: `uv run python count_tokens.py <file>`
-- Add `-v` for verbose output (tokens, characters, words, lines)
+Use `uv run python count_tokens.py <file>` to check token counts before sending large files or prompts to LLMs.
 
 ## 5. File discovery and selection
 
 When you need to find relevant files:
 
 1. **Search instead of guessing**
-   - Use command-line tools (e.g., `find`, `fd`, `ls`, `osgrep`) to:
+   - Use command-line tools to:
      - Enumerate files in the current folder and subfolders.
      - Search for key parties, dates, or issues.
 
@@ -132,9 +130,9 @@ When you need to find relevant files:
    - Start with:
      - Any term sheets, engagement letters, or instructions.
      - Existing drafts or redlines.
-     - Underlying agreements or pleadings.
-   - When reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
-   - When reading a markdown file in its entirety not using the Explore agent, if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
+     - Underlying agreements or pleadings.   
+   - Before reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
+   - When reading a markdown file in its entirety into context (i.e., not using the Explore agent) if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
 
 ## 6. Standard workflow for legal tasks
 
