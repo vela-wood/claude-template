@@ -32,6 +32,10 @@ class FilesScreen(Screen):
         ("escape", "go_back", "Back"),
         ("q", "go_back", "Back"),
         ("left", "go_back", "Back"),
+        ("1", "sort_by('name')", "Sort Name"),
+        ("2", "sort_by('type')", "Sort Type"),
+        ("3", "sort_by('version')", "Sort Version"),
+        ("4", "sort_by('modified')", "Sort Modified"),
     ]
 
     def __init__(self, doc_id: str, label: str, nd_helper: NDHelper):
@@ -40,6 +44,8 @@ class FilesScreen(Screen):
         self.label = label
         self.nd_helper = nd_helper
         self._files: list[dict] = []
+        self._sort_column: str | None = None
+        self._sort_reverse: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -69,6 +75,9 @@ class FilesScreen(Screen):
 
     def _populate_table(self) -> None:
         self._hide_loading()
+        self._refresh_table()
+
+    def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
         for f in self._files:
@@ -124,3 +133,28 @@ class FilesScreen(Screen):
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
+
+    def action_sort_by(self, column: str) -> None:
+        # Toggle direction if same column
+        if self._sort_column == column:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column
+            self._sort_reverse = False
+
+        # Define sort keys
+        def get_sort_key(f: dict):
+            attrs = f.get("Attributes", {})
+            versions = f.get("Versions", {})
+            if column == "name":
+                return attrs.get("Name", "").lower()
+            elif column == "type":
+                return attrs.get("Ext", "").lower()
+            elif column == "version":
+                return versions.get("Official", 0)
+            elif column == "modified":
+                return attrs.get("Modified", "") or ""
+            return ""
+
+        self._files.sort(key=get_sort_key, reverse=self._sort_reverse)
+        self._refresh_table()
