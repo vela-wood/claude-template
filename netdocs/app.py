@@ -59,6 +59,7 @@ class NetDocsApp(App):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("c", "copy_url", "Copy URL"),
+        ("d", "change_download_dir", "Download path"),
     ]
 
     def __init__(self):
@@ -180,3 +181,6 @@ class NetDocsApp(App):
         url = f"https://vault.netvoyage.com/neWeb2/goId.aspx?id={doc_id}"
         pyperclip.copy(url)
         self.notify(f"Copied: {url}")
+
+    def action_change_download_dir(self) -> None:
+        self._prompt_download_dir()
