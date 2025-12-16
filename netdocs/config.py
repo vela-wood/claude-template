@@ -2,7 +2,7 @@ import os
 import configparser
 from pathlib import Path
 
-CONFIG_FILE = Path(os.getenv("CONFIG_PATH", "netdocs.cfg"))
+CONFIG_FILE = Path(os.getenv("CONFIG_PATH", "~/ndcli.cfg")).expanduser()
 
 SEARCH_QUERY = """
 SELECT id, name as label

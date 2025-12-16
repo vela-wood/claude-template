@@ -21,7 +21,7 @@ class NDHelper:
     def __init__(self, download_dir: str):
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.api_key = os.getenv("FAST_API_KEY")
+        self.api_key = os.getenv("ND_API_KEY")
         self.base_url = os.getenv("NDHELPER_URL")
 
     def ls(self, docid: str):
@@ -69,7 +69,7 @@ class NetDocsApp(App):
         self._nd_helper: NDHelper | None = None
 
     async def on_mount(self) -> None:
-        self._pool = await asyncpg.create_pool(os.environ["DB"])
+        self._pool = await asyncpg.create_pool(os.environ["MATTERS_DB"])
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.add_columns("ID", "Label")
@@ -99,7 +99,7 @@ class NetDocsApp(App):
         save_config(self._config)
         self._nd_helper = NDHelper(download_dir)
         self.notify(f"Download directory: {download_dir}")
-        self._show_recent_matters()
+        #self._show_recent_matters()
 
     def _show_recent_matters(self) -> None:
         """Populate table with recent matters if available"""
