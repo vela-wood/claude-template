@@ -1,10 +1,13 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, Static, LoadingIndicator
+
+from ..config import get_download_info, record_download
 
 if TYPE_CHECKING:
     from ..app import NDHelper
@@ -36,6 +39,7 @@ class FilesScreen(Screen):
         ("2", "sort_by('type')", "Sort Type"),
         ("3", "sort_by('version')", "Sort Version"),
         ("4", "sort_by('modified')", "Sort Modified"),
+        ("5", "sort_by('downloaded')", "Sort Downloaded"),
     ]
 
     def __init__(self, doc_id: str, label: str, nd_helper: NDHelper):
@@ -57,7 +61,7 @@ class FilesScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.cursor_type = "row"
-        table.add_columns("Name", "Type", "Version", "Modified")
+        table.add_columns("Name", "Type", "Version", "Modified", "Downloaded")
         self.load_files()
 
     @work(exclusive=True, thread=True)
@@ -80,18 +84,44 @@ class FilesScreen(Screen):
     def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
+        config = self.app._config
         for f in self._files:
             attrs = f.get("Attributes", {})
             versions = f.get("Versions", {})
+            doc_id = f.get("DocId", "")
+            server_checksum = f.get("Checksum", "")
             name = attrs.get("Name", "")
             if len(name) > 80:
                 name = name[:77] + "..."
-            table.add_row(
-                name,
-                attrs.get("Ext", ""),
-                str(versions.get("Official", 1)),
-                attrs.get("Modified", "")[:10] if attrs.get("Modified") else "",
-            )
+            server_version = versions.get("Official", 1)
+            download_info = get_download_info(config, doc_id)
+
+            # Determine if row should be highlighted (checksum mismatch = outdated)
+            if download_info is not None:
+                local_checksum, download_date = download_info
+                is_outdated = local_checksum != server_checksum
+            else:
+                download_date = ""
+                is_outdated = False
+
+            if is_outdated:
+                # Highlight row in subtle yellow
+                style = "on dark_goldenrod"
+                table.add_row(
+                    Text(name, style=style),
+                    Text(attrs.get("Ext", ""), style=style),
+                    Text(str(server_version), style=style),
+                    Text(attrs.get("Modified", "")[:10] if attrs.get("Modified") else "", style=style),
+                    Text(download_date, style=style),
+                )
+            else:
+                table.add_row(
+                    name,
+                    attrs.get("Ext", ""),
+                    str(server_version),
+                    attrs.get("Modified", "")[:10] if attrs.get("Modified") else "",
+                    download_date,
+                )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()  # Prevent bubbling to App's handler
@@ -110,6 +140,7 @@ class FilesScreen(Screen):
         attrs = f.get("Attributes", {})
         versions = f.get("Versions", {})
         doc_id = f.get("DocId", "")
+        checksum = f.get("Checksum", "")
         name = attrs.get("Name", "")
         ext = attrs.get("Ext", "")
         version = versions.get("Official", 1)
@@ -120,13 +151,16 @@ class FilesScreen(Screen):
             return
 
         # Download the file
-        self._download_file(doc_id, int(version), f"{name}.{ext}")
+        self._download_file(doc_id, int(version), f"{name}.{ext}", checksum)
 
     @work(thread=True)
-    def _download_file(self, doc_id: str, version: int, filename: str) -> None:
+    def _download_file(self, doc_id: str, version: int, filename: str, checksum: str) -> None:
         self.app.call_from_thread(self.notify, f"Downloading {filename}...")
         try:
             path = self.nd_helper.download(doc_id, version, filename)
+            # Record the download in config with checksum
+            record_download(self.app._config, doc_id, checksum)
+            self.app.call_from_thread(self._refresh_table)
             self.app.call_from_thread(self.notify, f"Downloaded: {path}")
         except Exception as e:
             self.app.call_from_thread(self.notify, str(e), severity="error")
@@ -143,6 +177,8 @@ class FilesScreen(Screen):
             self._sort_reverse = False
 
         # Define sort keys
+        config = self.app._config
+
         def get_sort_key(f: dict):
             attrs = f.get("Attributes", {})
             versions = f.get("Versions", {})
@@ -154,6 +190,9 @@ class FilesScreen(Screen):
                 return versions.get("Official", 0)
             elif column == "modified":
                 return attrs.get("Modified", "") or ""
+            elif column == "downloaded":
+                info = get_download_info(config, f.get("DocId", ""))
+                return info[1] if info is not None else ""
             return ""
 
         self._files.sort(key=get_sort_key, reverse=self._sort_reverse)
