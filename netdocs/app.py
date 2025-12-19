@@ -168,7 +168,7 @@ class NetDocsApp(App):
         doc_id, label = selected
         if self._nd_helper:
             add_recent_matter(self._config, doc_id, label)
-            self.push_screen(FilesScreen(doc_id, label, self._nd_helper))
+            self.push_screen(FilesScreen(doc_id, label))
         else:
             self.notify("NDHelper not initialized", severity="error")
 

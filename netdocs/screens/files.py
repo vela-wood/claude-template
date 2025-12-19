@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from rapidfuzz import fuzz
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, Static, LoadingIndicator
+from textual.widgets import Header, Footer, DataTable, Static, LoadingIndicator, Input
 
 from ..config import get_download_info, record_download
 
@@ -16,12 +17,15 @@ if TYPE_CHECKING:
 class FilesScreen(Screen):
     """Screen to list files within a matter/folder"""
     CSS = """
+    FilesScreen Input {
+        margin: 1 2;
+    }
     FilesScreen DataTable {
         margin: 0 2;
         height: 1fr;
     }
     FilesScreen .title {
-        margin: 1 2;
+        margin: 0 2;
         text-style: bold;
     }
     FilesScreen LoadingIndicator {
@@ -34,25 +38,28 @@ class FilesScreen(Screen):
     BINDINGS = [
         ("escape", "go_back", "Back"),
         ("q", "go_back", "Back"),
-        ("left", "go_back", "Back"),
-        ("1", "sort_by('name')", "Sort Name"),
-        ("2", "sort_by('type')", "Sort Type"),
-        ("3", "sort_by('version')", "Sort Version"),
-        ("4", "sort_by('modified')", "Sort Modified"),
-        ("5", "sort_by('downloaded')", "Sort Downloaded"),
+        ("1", "sort_by('modified')", "Sort Modified"),
+        ("2", "sort_by('downloaded')", "Sort Downloaded"),
     ]
 
-    def __init__(self, doc_id: str, label: str, nd_helper: NDHelper):
+    def __init__(self, doc_id: str, label: str):
         super().__init__()
         self.doc_id = doc_id
         self.label = label
-        self.nd_helper = nd_helper
         self._files: list[dict] = []
+        self._filtered_files: list[dict] = []
         self._sort_column: str | None = None
         self._sort_reverse: bool = False
+        self._search_term: str = ""
+
+    @property
+    def nd_helper(self) -> NDHelper:
+        """Access the app's current NDHelper to pick up download_dir changes."""
+        return self.app._nd_helper
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Input(placeholder="Search files...")
         yield Static(f"Files in: {self.label}", classes="title")
         yield LoadingIndicator()
         yield DataTable(classes="hidden")
@@ -79,13 +86,48 @@ class FilesScreen(Screen):
 
     def _populate_table(self) -> None:
         self._hide_loading()
+        self._apply_filter()
         self._refresh_table()
+
+    def _apply_filter(self) -> None:
+        """Filter files based on search term using fuzzy matching."""
+        if not self._search_term:
+            self._filtered_files = self._files[:]
+            return
+
+        scored_files = []
+        for f in self._files:
+            name = f.get("Attributes", {}).get("Name", "")
+            score = fuzz.partial_ratio(self._search_term.lower(), name.lower())
+            if score >= 90:  # threshold for inclusion
+                scored_files.append((score, f))
+
+        # Sort by score descending, then by name
+        scored_files.sort(key=lambda x: (-x[0], x[1].get("Attributes", {}).get("Name", "")))
+        self._filtered_files = [f for _, f in scored_files]
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle search input changes."""
+        self._search_term = event.value
+        self._apply_filter()
+        self._refresh_table()
+
+    def on_key(self, event) -> None:
+        """Handle keyboard navigation between Input and DataTable."""
+        if event.key == "down" and self.query_one(Input).has_focus:
+            self.query_one(DataTable).focus()
+            event.prevent_default()
+        elif event.key == "up":
+            table = self.query_one(DataTable)
+            if table.has_focus and table.cursor_row == 0:
+                self.query_one(Input).focus()
+                event.prevent_default()
 
     def _refresh_table(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
         config = self.app._config
-        for f in self._files:
+        for f in self._filtered_files:
             attrs = f.get("Attributes", {})
             versions = f.get("Versions", {})
             doc_id = f.get("DocId", "")
@@ -133,10 +175,10 @@ class FilesScreen(Screen):
     def _handle_row_selection(self) -> None:
         table = self.query_one(DataTable)
         row_idx = table.cursor_row
-        if row_idx is None or row_idx >= len(self._files):
+        if row_idx is None or row_idx >= len(self._filtered_files):
             return
 
-        f = self._files[row_idx]
+        f = self._filtered_files[row_idx]
         attrs = f.get("Attributes", {})
         versions = f.get("Versions", {})
         doc_id = f.get("DocId", "")
@@ -147,7 +189,7 @@ class FilesScreen(Screen):
 
         # If it's a folder, navigate into it
         if ext == "ndfld":
-            self.app.push_screen(FilesScreen(doc_id, name, self.nd_helper))
+            self.app.push_screen(FilesScreen(doc_id, name))
             return
 
         # Download the file
@@ -196,4 +238,5 @@ class FilesScreen(Screen):
             return ""
 
         self._files.sort(key=get_sort_key, reverse=self._sort_reverse)
+        self._apply_filter()
         self._refresh_table()
