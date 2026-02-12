@@ -87,7 +87,7 @@ Procedure:
 
 ### 4.5 count_tokens (token counting)
 
-Use `uv run python count_tokens.py <file>` to check token counts before sending large files or prompts to LLMs.
+Use `uv run python tools/count_tokens.py <file>` to check token counts before sending large files or prompts to LLMs.
 
 ### 4.6 /xlsx /docx /pptx /pdf skills
 
@@ -114,7 +114,7 @@ When you need to find relevant files:
      - Any term sheets, engagement letters, or instructions.
      - Existing drafts or redlines.
      - Underlying agreements or pleadings.   
-   - Before reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
+   - Before reading any markdown file always (1) count its tokens with `uv run python tools/count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
    - When reading a markdown file in its entirety into context (i.e., not using the Explore agent) if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
 
 ## 6. Standard workflow for legal tasks
