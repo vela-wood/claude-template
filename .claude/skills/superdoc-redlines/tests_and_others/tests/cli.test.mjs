@@ -151,7 +151,7 @@ describe('CLI: extract', () => {
     const ir = JSON.parse(irJson);
 
     const block = ir.blocks[0];
-    assert.ok(block.id);
+    assert.equal(block.id, undefined);
     assert.ok(block.seqId);
     assert.ok(block.type);
     assert.ok(block.text !== undefined);

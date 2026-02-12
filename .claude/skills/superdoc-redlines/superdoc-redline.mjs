@@ -46,6 +46,58 @@ const parseIntArg = (value) => {
   return parsed;
 };
 
+const UUID_REGEX_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_REGEX_GLOBAL = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const UUID_PLACEHOLDER = '[seqId-required]';
+
+function looksLikeUuid(value) {
+  return typeof value === 'string' && UUID_REGEX_EXACT.test(value);
+}
+
+function sanitizeStdoutText(value) {
+  return typeof value === 'string'
+    ? value.replace(UUID_REGEX_GLOBAL, UUID_PLACEHOLDER)
+    : value;
+}
+
+function sanitizeStdoutValue(value) {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === 'string') {
+    return sanitizeStdoutText(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeStdoutValue(item));
+  }
+
+  if (typeof value === 'object') {
+    const sanitized = {};
+    for (const [rawKey, rawVal] of Object.entries(value)) {
+      if (rawKey === 'idMapping') {
+        continue;
+      }
+      if (rawKey === 'id' && looksLikeUuid(rawVal)) {
+        continue;
+      }
+
+      const key = sanitizeStdoutText(rawKey);
+      sanitized[key] = sanitizeStdoutValue(rawVal);
+    }
+    return sanitized;
+  }
+
+  return value;
+}
+
+function printStdoutJson(value) {
+  console.log(JSON.stringify(sanitizeStdoutValue(value), null, 2));
+}
+
+function formatStdoutBlockId(value) {
+  return looksLikeUuid(value) ? UUID_PLACEHOLDER : value;
+}
+
 program
   .name('superdoc-redline')
   .description('Structured document operations for AI agents')
@@ -78,7 +130,8 @@ program
         maxTextLength: options.maxText || null
       });
 
-      await writeFile(outputPath, JSON.stringify(ir, null, 2));
+      const outputIr = sanitizeStdoutValue(ir);
+      await writeFile(outputPath, JSON.stringify(outputIr, null, 2));
 
       console.log(`\nExtraction complete:`);
       console.log(`  Blocks: ${ir.blocks.length}`);
@@ -118,7 +171,7 @@ program
         const stats = await getDocumentStats(inputPath, {
           maxTokens: options.maxTokens
         });
-        console.log(JSON.stringify(stats, null, 2));
+        printStdoutJson(stats);
         return;
       }
 
@@ -135,7 +188,7 @@ program
       }
 
       // Output as JSON for LLM consumption
-      console.log(JSON.stringify(result, null, 2));
+      printStdoutJson(result);
 
     } catch (error) {
       console.error('Error:', error.message);
@@ -162,7 +215,7 @@ program
 
       const result = await validateEdits(inputPath, edits);
 
-      console.log(JSON.stringify(result, null, 2));
+      printStdoutJson(result);
 
       // Check for content reduction warnings and inform user about --allow-reduction
       const reductionWarnings = (result.warnings || []).filter(w =>
@@ -247,7 +300,9 @@ program
         if (!options.quietWarnings) {
           console.log(`\nWarnings (possible truncation/corruption):`);
           for (const warn of result.warnings) {
-            console.log(`  [${warn.editIndex}] ${warn.blockId} - ${warn.message}`);
+            const blockId = formatStdoutBlockId(warn.blockId);
+            const message = sanitizeStdoutText(warn.message);
+            console.log(`  [${warn.editIndex}] ${blockId} - ${message}`);
           }
         }
       }
@@ -255,7 +310,9 @@ program
       if (result.skipped.length > 0) {
         console.log(`\nSkipped edits:`);
         for (const skip of result.skipped) {
-          console.log(`  [${skip.index}] ${skip.blockId} - ${skip.reason}`);
+          const blockId = formatStdoutBlockId(skip.blockId);
+          const reason = sanitizeStdoutText(skip.reason);
+          console.log(`  [${skip.index}] ${blockId} - ${reason}`);
         }
       }
 
@@ -311,7 +368,8 @@ program
         if (result.conflicts && result.conflicts.length > 0) {
           console.log('\nConflicts:');
           for (const conflict of result.conflicts) {
-            console.log(`  Block ${conflict.blockId}: ${conflict.edits.length} conflicting edits`);
+            const blockId = formatStdoutBlockId(conflict.blockId);
+            console.log(`  Block ${blockId}: ${conflict.edits.length} conflicting edits`);
           }
         }
         process.exit(1);
@@ -335,7 +393,9 @@ program
         if (!validation.valid) {
           console.log('\nValidation issues:');
           for (const issue of validation.issues) {
-            console.log(`  [${issue.editIndex}] ${issue.type}: ${issue.message}`);
+            const type = sanitizeStdoutText(issue.type);
+            const message = sanitizeStdoutText(issue.message);
+            console.log(`  [${issue.editIndex}] ${type}: ${message}`);
           }
           process.exit(1);
         }
@@ -487,7 +547,6 @@ program
           if (results.length < maxResults) {
             results.push({
               seqId: block.seqId,
-              id: block.id,
               type: block.type,
               text: block.text,
               preview: truncateWithContext(
@@ -510,7 +569,6 @@ program
         console.log(`Found ${totalMatches} block(s)${truncatedMsg}:\n`);
         for (const result of results) {
           console.log(`[${result.seqId}] (${result.type})`);
-          console.log(`  ID: ${result.id}`);
           console.log(`  Preview: ${result.preview}`);
           console.log('');
         }

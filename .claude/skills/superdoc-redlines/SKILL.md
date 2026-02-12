@@ -158,8 +158,8 @@ Rewriting entire clause with new structure?
 
 ```
 "Block ID not found":
-  → If your blockId looks like a UUID (e.g., "550e8400-e29b-..."):
-    UUIDs are not portable across CLI commands. Use seqId (bNNN) instead.
+  → If your blockId is not in seqId format (e.g., b001):
+    Use seqId values from extracted output.
   → Verify blockId exists in extracted IR (use seqId column)
   → Check for typos (b001 vs B001 - case sensitive)
   → Re-extract IR if document changed
@@ -198,7 +198,7 @@ Rewriting entire clause with new structure?
 
 6. **Insert uses `afterBlockId`** — NOT `blockId`. The new block is inserted AFTER the specified block.
 
-7. **Use `seqId` in edit files** — Do not use UUIDs from extract output. UUIDs are regenerated on each document load and will cause `"Block not found"` errors in apply/validate. Always use `seqId` format (`b001`, `b025`, etc.).
+7. **Use `seqId` in edit files** — Always use `seqId` format (`b001`, `b025`, etc.).
 
 </critical_constraints>
 
@@ -398,14 +398,11 @@ Use this schema to validate your edits before applying:
 
 ## ID Formats
 
-**Always use seqId.** UUIDs are deprecated for edit files and will emit a warning.
+**Always use seqId.**
 
 | Format | Example | Status |
 |--------|---------|--------|
 | **seqId** | `b001`, `b025`, `b100` | **Required** — stable, human-readable, portable across CLI commands |
-| **UUID** | `550e8400-e29b-41d4-...` | **Deprecated** — session-volatile, regenerated on each document load |
-
-SeqIds are derived from document order and are consistent across extractions of the same document. UUIDs change every time the document is loaded and are not portable across CLI invocations (`extract` → `apply`). UUID acceptance is retained only for backward compatibility within a single programmatic session (same editor instance) and will produce a deprecation warning.
 
 ---
 
@@ -516,7 +513,7 @@ node superdoc-redline.mjs apply -i contract.docx -o redlined.docx -e merged.json
 ```bash
 node superdoc-redline.mjs apply -i doc.docx -o out.docx -e edits.json \
   --author-name "AI Counsel" \
-  --author-email "ai@firm.com"
+  --author-email "ai@velawood.com.com"
 ```
 
 ### Disable Track Changes
