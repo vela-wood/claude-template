@@ -23,10 +23,10 @@
 1. **Identify the working folder**
    - Treat $PWD as the active matter folder; let matter_name = basename $PWD (used for journals and cass workspaces).
 
-2. **Read journal if asked**
-   - Only perform the below if the user asks you to look at your journal
+2. **Offer to read journal**
+   - If instructed to look at the journal...
    - List `~/legal/_journal/`.
-   - The _journal folder aggregates entries across all legal matters, not just the active matter.
+   - The _journal folder aggregates entries from all legal matters, not just the active matter.
    - Filenames will follow this syntax: `{matter_name}_{yyyymmdd}_{taskdescription}.md`
    - Identify files which appear related to the current matter or task by filename and read them.
    - Relevance includes similar tasks across different matters.

@@ -1,0 +1,10 @@
+{
+  "respectGitignore": false,
+  "permissions": {
+    "allow": [
+      "Bash(uv run markitdown:*)",
+      "Bash(npm view:*)",
+      "Bash(node superdoc-redline.mjs:*)"
+    ]
+  }
+}
