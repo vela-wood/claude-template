@@ -1,0 +1,3 @@
+[submodule ".claude/skills/superdoc-redlines"]
+	path = .claude/skills/superdoc-redlines
+	url = https://github.com/yuch85/superdoc-redlines.git
