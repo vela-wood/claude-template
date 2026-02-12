@@ -23,19 +23,18 @@
 1. **Identify the working folder**
    - Treat $PWD as the active matter folder; let matter_name = basename $PWD (used for journals and cass workspaces).
 
-2. **Inspect the journal directory**
+2. **Read journal if asked**
+   - Only perform the below if the user asks you to look at your journal
    - List `~/legal/_journal/`.
-   - The _journal folder aggregates entries from all legal matters, not just the active matter.
+   - The _journal folder aggregates entries across all legal matters, not just the active matter.
    - Filenames will follow this syntax: `{matter_name}_{yyyymmdd}_{taskdescription}.md`
    - Identify files which appear related to the current matter or task by filename and read them.
    - Relevance includes similar tasks across different matters.
    - Read up to 3 journal entries before asking the user for permission to read additional ones.
-   
-3. **Incorporate prior context**
    - Briefly summarize any relevant prior work, decisions, or user preferences from those journal entries.
    - If nothing seems relevant, state that explicitly and proceed.
 
-4. **Offer cass (chat-history search) when appropriate**
+3. **Offer cass (chat-history search) when appropriate**
    - If a journal entry suggests the actual chat-history will provide additional useful information over the summary, ask:
      - “Would you like me to run `cass --search {search_string} --workspace {matter_name} --robot` to search the relevant chat history?”
    - Never run `cass` without first confirming with the user.
@@ -54,7 +53,7 @@ Then proceed to the main task.
 
 ### 4.2 markitdown (for documents and archives)
 
-Use `markitdown` only for these extensions:
+Default to `uv run markitdown` when reading any file with the following extension:
 - `.pdf`, `.docx`, `.doc`, `.pptx`, `.ppt`, `.zip`
 
 Procedure:
@@ -68,18 +67,9 @@ Procedure:
      - `uv run markitdown source.ext -o source.ext.md`
    - Always use the `-o` flag and then read the converted `.md` file, not the original binary.
 
-3. **Stale-conversion handling**
-   - If you can see timestamps:
-     - If `source.ext` is newer than `source.ext.md`, reconvert using the same `-o` pattern.
-
-4. **ZIP files**
-   - For `.zip`:
-     - Use `markitdown` on the zip file per your standard patterns, or
-     - If the archive is large/complex, ask the user how deep to go (whole archive vs specific subpaths).
-
 ### 4.3 pandas (for tabular data)
 
-Use pandas only for:
+Default to pandas for:
 - `.csv`, `.xls`, `.xlsx`
 
 Procedure:
@@ -87,9 +77,6 @@ Procedure:
 2. Use pandas for:
    - Filtering by date, party, amount, etc.
    - Grouping, aggregations, consistency checks.
-3. Present results as:
-   - Clear bullet points and small tables.
-   - If there is a lot of data, summarize first, then offer more detail if requested.
 
 ### 4.4 Other file extensions
 
@@ -98,18 +85,14 @@ Procedure:
   - Use your best judgment to pick the simplest tool (e.g., basic command-line inspection, hexdump, or language-appropriate parser).
   - If there is ambiguity about how to handle an exotic format, briefly explain options and ask the user for a quick preference.
 
-### 4.5 cass (chat history search)
+### 4.5 count_tokens (token counting)
 
-- Only use `cass` after:
-  - Reviewing journal entries and concluding that prior chat context is likely useful.
-  - Asking the user for permission, as described above.
-- When the user consents:
-  - Run:
-    - `cass --search {search_query} --workspace {matter_name} --robot`
+Use `uv run python tools/count_tokens.py <file>` to check token counts before sending large files or prompts to LLMs.
 
-### 4.6 count_tokens (token counting)
+### 4.6 /xlsx /docx /pptx /pdf skills
 
-Use `uv run python count_tokens.py <file>` to check token counts before sending large files or prompts to LLMs.
+- If editing or creating an excel, word, powerpoint, or pdf file, always use the respective skill.
+- Also use these skills instead of markitdown when expressly instructed to do so.
 
 ## 5. File discovery and selection
 
@@ -131,7 +114,7 @@ When you need to find relevant files:
      - Any term sheets, engagement letters, or instructions.
      - Existing drafts or redlines.
      - Underlying agreements or pleadings.   
-   - Before reading any markdown file always (1) count its tokens with `uv run python count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
+   - Before reading any markdown file always (1) count its tokens with `uv run python tools/count_tokens.py <file>` (2) open it using the Explore agent before determining whether to read it in its entirety. 
    - When reading a markdown file in its entirety into context (i.e., not using the Explore agent) if the file is greater than 10k tokens, ask the user for confirmation before proceeding.
 
 ## 6. Standard workflow for legal tasks
