@@ -13,4 +13,6 @@ wheels/
 *.cfg
 *.docx
 *.pdf
-
+*.csv
+*.eml
+*.msg

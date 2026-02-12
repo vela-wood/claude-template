@@ -24,6 +24,18 @@ TOKEN_INDEX_FILENAME = ".token_index.csv"
 DOCX_CONVERTER_MARKITDOWN = "markitdown"
 DOCX_CONVERTER_SUPERDOC = "superdoc-redlines"
 DEFAULT_DOCX_CONVERTER = DOCX_CONVERTER_MARKITDOWN
+EMAIL_SUFFIXES = {
+    ".eml",
+    ".msg",
+    ".emlx",
+    ".mbox",
+    ".mbx",
+    ".mht",
+    ".mhtml",
+    ".oft",
+}
+MARKITDOWN_MD_SUFFIXES = {".pdf"} | EMAIL_SUFFIXES
+SOURCE_SUFFIXES = MARKITDOWN_MD_SUFFIXES | {".docx"}
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")
@@ -48,9 +60,10 @@ def count_tokens(path: Path) -> int:
 
 def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -> Path:
     """Return the expected converted-file path for a source file."""
-    if source.suffix == ".pdf":
+    suffix = source.suffix.lower()
+    if suffix in MARKITDOWN_MD_SUFFIXES:
         return source.parent / f"{source.name}.md"
-    if source.suffix == ".docx":
+    if suffix == ".docx":
         suffix = "md" if docx_converter == DOCX_CONVERTER_MARKITDOWN else "json"
         return source.parent / f"{source.name}.{suffix}"
     raise ValueError(f"Unsupported source type: {source}")
@@ -110,16 +123,9 @@ def save_token_index(root: Path, index: dict[str, int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _convert_one_pdf(pdf: Path, md_path: Path) -> None:
+def _convert_one_markitdown(source: Path, md_path: Path) -> None:
     subprocess.run(
-        ["uv", "run", "markitdown", str(pdf), "-o", str(md_path)],
-        check=True,
-    )
-
-
-def _convert_one_docx_markitdown(docx: Path, md_path: Path) -> None:
-    subprocess.run(
-        ["uv", "run", "markitdown", str(docx), "-o", str(md_path)],
+        ["uv", "run", "markitdown", str(source), "-o", str(md_path)],
         check=True,
     )
 
@@ -160,11 +166,12 @@ def convert_files(
         rel = str(src.relative_to(root))
         out = converted_path(src, docx_converter)
         print(f"\t{rel} -> {out.name}")
-        if src.suffix == ".pdf":
-            _convert_one_pdf(src, out)
-        elif src.suffix == ".docx":
+        suffix = src.suffix.lower()
+        if suffix in MARKITDOWN_MD_SUFFIXES:
+            _convert_one_markitdown(src, out)
+        elif suffix == ".docx":
             if docx_converter == DOCX_CONVERTER_MARKITDOWN:
-                _convert_one_docx_markitdown(src, out)
+                _convert_one_markitdown(src, out)
             else:
                 _convert_one_docx_superdoc(src, out)
         return rel
@@ -231,7 +238,7 @@ def index_tokens(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert PDF and DOCX files and maintain hash/token indexes."
+        description="Convert supported documents/email files and maintain hash/token indexes."
     )
     parser.add_argument(
         "--docx_converter",
@@ -265,12 +272,14 @@ def main():
     def _visible(p: Path) -> bool:
         return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
 
-    pdfs = sorted(p for p in root.rglob("*.pdf") if _visible(p))
-    docx_files = sorted(p for p in root.rglob("*.docx") if _visible(p))
-    sources = pdfs + docx_files 
+    sources = sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and _visible(p) and p.suffix.lower() in SOURCE_SUFFIXES
+    )
 
     if not sources:
-        print("\nNo PDF or DOCX files found.")
+        print("\nNo supported source files found.")
         save_hash_index(root, hash_index)
         save_token_index(root, token_index)
         return

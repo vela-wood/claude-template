@@ -21,9 +21,12 @@
 ## 3. Startup procedure for every task
 
 1. **Identify the working folder**
-   - Treat $PWD as the active matter folder; let matter_name = basename $PWD (used for journals and cass workspaces).
+   - Treat $PWD as the active matter folder; let matter_name = basename $PWD 
 
-2. **Offer to read journal**
+2. **Convert all relevant files to markdown**
+   - Use `uv run startup.py` 
+
+3. **[OPTIONAL] read journal**
    - If instructed to look at the journal...
    - List `~/legal/_journal/`.
    - The _journal folder aggregates entries from all matters, not just the active matter.
@@ -33,12 +36,6 @@
    - Read up to 3 journal entries before asking the user for permission to read additional ones.
    - Briefly summarize any relevant prior work, decisions, or user preferences from those journal entries.
    - If nothing seems relevant, state that explicitly and proceed.
-
-3. **Offer cass (chat-history search) when appropriate**
-   - If a journal entry suggests the actual chat-history will provide additional useful information over the summary, ask:
-     - “Would you like me to run `cass --search {search_string} --workspace {matter_name} --robot` to search the relevant chat history?”
-   - Never run `cass` without first confirming with the user.
-   - Never run `cass` without the `--workspace {matter_name}` and `--robot` flags.
 
 Then proceed to the main task.
 
@@ -61,7 +58,7 @@ It outputs `.hash_index.csv` (file hashes for change detection) and `.token_inde
 
 Procedure:
 1. **Preferred input = already-converted file**
-   - Never read a .docx or .pdf file unless directly instructed to, always read its converted version:
+   - Never read a binary file file unless directly instructed to, always read its converted markdown version:
      - For `foo.pdf`, read `foo.pdf.md`.
      - For `foo.docx`, read `foo.docx.md`.
    - Be mindful of edited markdown, which will contain `eYYYYMMDD` in the filename as mentioned above.
@@ -91,19 +88,32 @@ Procedure:
 Token counts of converted files are maintained in `.token_index.csv` at the repo root (columns: `file`, `tokens`).
 - To look up a file's token count: `grep "filename" .token_index.csv`
 - If the file is missing from the index, run `uv run startup.py` to reindex.
-- Never call `count_tokens.py` directly on a docx or pdf file.
+- Never call `count_tokens.py` directly to convert a file unless instructed since it will fail to update `.token_index.csv`
 
 ### 4.6 Editing Word documents
 
-- ONLY use the /superdoc-redlines skill to edit a word document
-- For anything other than simple edits, create a plan before invoking the skill by:
-   - First, review the .docx.md file without
-   - Second, edit the .docx.md file and save it as a separate file with eYYYYMMDD.docx.md syntax.
-   - Recommend that the user clear context and then invoke the skill to use two markdown files to create an edits.md file that conforms with the rules required by the superdocs-redlines skill.
+- ONLY use the /superdoc-redlines skill when editing a word document
+
+### 4.7 Removing PDF artifacts (watermarks, headers, footers)
+
+- If a .pdf.md file contains artifacts, clean it with `uv run python tools/remove_artifacts.py`. 
+
+```
+usage: remove_artifacts.py [-h] [--output OUTPUT] input_md
+
+Remove PDF artifacts via cleaning API.
+
+positional arguments:
+  input_md              Path to input markdown file
+
+options:
+  -h, --help            show this help message and exit
+  --output OUTPUT       Optional output path. Defaults to input name with _cleaned suffix.
+```
 
 ## 5. File discovery and selection
 
-When you need to find relevant files:
+To find relevant files:
 
 1. **Search instead of guessing**
    - Use command-line tools to:
@@ -198,4 +208,4 @@ After performing any task:
   - Ask a targeted clarification question only if needed to proceed correctly.
 
 - If an instruction conflicts with this AGENTS file:
-  - Defer to the user’s explicit instruction and briefly note the conflict in the journal.
+  - Defer to the user’s explicit instruction and briefly note the conflict.
