@@ -1,3 +1,4 @@
+import argparse
 import csv
 import hashlib
 import os
@@ -18,7 +19,11 @@ SUPERDOC = (
     / "superdoc-redline.mjs"
 )
 
-INDEX_FILENAME = ".file_index.csv"
+HASH_INDEX_FILENAME = ".hash_index.csv"
+TOKEN_INDEX_FILENAME = ".token_index.csv"
+DOCX_CONVERTER_MARKITDOWN = "markitdown"
+DOCX_CONVERTER_SUPERDOC = "superdoc-redlines"
+DEFAULT_DOCX_CONVERTER = DOCX_CONVERTER_MARKITDOWN
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")
@@ -41,12 +46,13 @@ def count_tokens(path: Path) -> int:
     return len(_encoding.encode(text))
 
 
-def converted_path(source: Path) -> Path:
+def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -> Path:
     """Return the expected converted-file path for a source file."""
     if source.suffix == ".pdf":
         return source.parent / f"{source.name}.md"
     if source.suffix == ".docx":
-        return source.parent / f"{source.name}.json"
+        suffix = "md" if docx_converter == DOCX_CONVERTER_MARKITDOWN else "json"
+        return source.parent / f"{source.name}.{suffix}"
     raise ValueError(f"Unsupported source type: {source}")
 
 
@@ -55,27 +61,48 @@ def converted_path(source: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def load_index(root: Path) -> dict[str, tuple[str, int]]:
-    """Load .file_index.csv → {relative_path: (hash, token_count)}."""
-    index_path = root / INDEX_FILENAME
-    index: dict[str, tuple[str, int]] = {}
+def load_hash_index(root: Path) -> dict[str, str]:
+    """Load .hash_index.csv → {native_relative_path: hash}."""
+    index_path = root / HASH_INDEX_FILENAME
+    index: dict[str, str] = {}
     if not index_path.exists():
         return index
     with open(index_path, newline="") as f:
         for row in csv.DictReader(f):
-            index[row["file"]] = (row["hash"], int(row["tokens"]))
+            index[row["file"]] = row["hash"]
     return index
 
 
-def save_index(root: Path, index: dict[str, tuple[str, int]]) -> None:
-    """Write .file_index.csv from {relative_path: (hash, token_count)}."""
-    index_path = root / INDEX_FILENAME
+def save_hash_index(root: Path, index: dict[str, str]) -> None:
+    """Write .hash_index.csv from {native_relative_path: hash}."""
+    index_path = root / HASH_INDEX_FILENAME
     with open(index_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["file", "hash", "tokens"])
+        writer.writerow(["file", "hash"])
         for rel_path in sorted(index):
-            h, t = index[rel_path]
-            writer.writerow([rel_path, h, t])
+            writer.writerow([rel_path, index[rel_path]])
+
+
+def load_token_index(root: Path) -> dict[str, int]:
+    """Load .token_index.csv → {converted_relative_path: token_count}."""
+    index_path = root / TOKEN_INDEX_FILENAME
+    index: dict[str, int] = {}
+    if not index_path.exists():
+        return index
+    with open(index_path, newline="") as f:
+        for row in csv.DictReader(f):
+            index[row["file"]] = int(row["tokens"])
+    return index
+
+
+def save_token_index(root: Path, index: dict[str, int]) -> None:
+    """Write .token_index.csv from {converted_relative_path: token_count}."""
+    index_path = root / TOKEN_INDEX_FILENAME
+    with open(index_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["file", "tokens"])
+        for rel_path in sorted(index):
+            writer.writerow([rel_path, index[rel_path]])
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +117,14 @@ def _convert_one_pdf(pdf: Path, md_path: Path) -> None:
     )
 
 
-def _convert_one_docx(docx: Path, json_path: Path) -> None:
+def _convert_one_docx_markitdown(docx: Path, md_path: Path) -> None:
+    subprocess.run(
+        ["uv", "run", "markitdown", str(docx), "-o", str(md_path)],
+        check=True,
+    )
+
+
+def _convert_one_docx_superdoc(docx: Path, json_path: Path) -> None:
     result = subprocess.run(
         ["node", str(SUPERDOC), "read", "--input", str(docx), "--no-metadata"],
         capture_output=True,
@@ -104,14 +138,16 @@ def convert_files(
     root: Path,
     sources: list[Path],
     hashes: dict[str, str],
-    index: dict[str, tuple[str, int]],
+    hash_index: dict[str, str],
+    docx_converter: str,
 ) -> list[str]:
-    """Convert source files whose hash is new or changed. Returns list of converted relative paths."""
+    """Convert source files whose hash is new or changed. Returns list of native relative paths that were converted."""
     to_convert: list[Path] = []
     for src in sources:
         rel = str(src.relative_to(root))
-        old = index.get(rel)
-        if old is None or old[0] != hashes[rel]:
+        old_hash = hash_index.get(rel)
+        out = converted_path(src, docx_converter)
+        if old_hash is None or old_hash != hashes[rel] or not out.exists():
             to_convert.append(src)
 
     if not to_convert:
@@ -122,12 +158,15 @@ def convert_files(
 
     def _do_convert(src: Path) -> str:
         rel = str(src.relative_to(root))
-        out = converted_path(src)
+        out = converted_path(src, docx_converter)
         print(f"\t{rel} -> {out.name}")
         if src.suffix == ".pdf":
             _convert_one_pdf(src, out)
         elif src.suffix == ".docx":
-            _convert_one_docx(src, out)
+            if docx_converter == DOCX_CONVERTER_MARKITDOWN:
+                _convert_one_docx_markitdown(src, out)
+            else:
+                _convert_one_docx_superdoc(src, out)
         return rel
 
     with ThreadPoolExecutor() as pool:
@@ -150,17 +189,16 @@ def convert_files(
 def index_tokens(
     root: Path,
     hashes: dict[str, str],
-    index: dict[str, tuple[str, int]],
+    token_index: dict[str, int],
     converted_rels: list[str],
+    docx_converter: str,
 ) -> None:
-    """Count tokens for new/changed converted files and update index in-place."""
-    # Determine which files need (re)counting:
-    # - files that were just converted
-    # - files present in hashes but missing from index
+    """Count tokens for new/changed converted files and update token_index in-place."""
     needs_count: list[str] = []
     for rel in hashes:
-        if rel in converted_rels or rel not in index:
-            out = converted_path(root / rel)
+        out = converted_path(root / rel, docx_converter)
+        conv_rel = str(out.relative_to(root))
+        if rel in converted_rels or conv_rel not in token_index:
             if out.exists():
                 needs_count.append(rel)
 
@@ -170,17 +208,18 @@ def index_tokens(
     print(f"\nCounting tokens for {len(needs_count)} file(s)...")
 
     def _count(rel: str) -> tuple[str, int]:
-        out = converted_path(root / rel)
+        out = converted_path(root / rel, docx_converter)
+        conv_rel = str(out.relative_to(root))
         tokens = count_tokens(out)
-        return rel, tokens
+        return conv_rel, tokens
 
     with ThreadPoolExecutor() as pool:
         futures = {pool.submit(_count, rel): rel for rel in needs_count}
         for future in as_completed(futures):
             rel = futures[future]
             try:
-                rel_key, tokens = future.result()
-                index[rel_key] = (hashes[rel_key], tokens)
+                conv_rel, tokens = future.result()
+                token_index[conv_rel] = tokens
             except Exception as exc:
                 print(f"\tERROR counting tokens for {rel}: {exc}")
 
@@ -190,7 +229,21 @@ def index_tokens(
 # ---------------------------------------------------------------------------
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Convert PDF and DOCX files and maintain hash/token indexes."
+    )
+    parser.add_argument(
+        "--docx_converter",
+        choices=[DOCX_CONVERTER_MARKITDOWN, DOCX_CONVERTER_SUPERDOC],
+        default=DEFAULT_DOCX_CONVERTER,
+        help="Tool used for DOCX conversion (default: markitdown).",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     print("Python environment configured.")
     print("Tools available to agent...")
     nd_vars = ("MATTERS_DB", "ND_API_KEY", "NDHELPER_URL")
@@ -200,20 +253,26 @@ def main():
     artifact_vars = ("ARTIFACT_API_TOKEN", "ARTIFACT_URL")
     if all(os.getenv(var) for var in artifact_vars):
         print("\tPDF artifact removal")
+    print(f"\tDOCX converter: {args.docx_converter}")
 
     root = Path.cwd()
 
-    # 1. Load existing index
-    index = load_index(root)
+    # 1. Load existing indices
+    hash_index = load_hash_index(root)
+    token_index = load_token_index(root)
 
-    # 2. Discover source files
-    pdfs = sorted(root.rglob("*.pdf"))
-    docx_files = sorted(root.rglob("*.docx"))
-    sources = pdfs + docx_files
+    # 2. Discover source files (skip dot-prefixed directories)
+    def _visible(p: Path) -> bool:
+        return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
+
+    pdfs = sorted(p for p in root.rglob("*.pdf") if _visible(p))
+    docx_files = sorted(p for p in root.rglob("*.docx") if _visible(p))
+    sources = pdfs + docx_files 
 
     if not sources:
         print("\nNo PDF or DOCX files found.")
-        save_index(root, index)
+        save_hash_index(root, hash_index)
+        save_token_index(root, token_index)
         return
 
     # 3. Hash all source files in parallel
@@ -232,35 +291,41 @@ def main():
                 print(f"\tERROR hashing {rel}: {exc}")
 
     # 4. Convert files with changed/new hashes
-    converted_rels = convert_files(root, sources, hashes, index)
+    converted_rels = convert_files(root, sources, hashes, hash_index, args.docx_converter)
 
-    # 5. Update index hashes for unchanged files (keep existing token counts)
+    # 5. Update hash index for all current files
     for rel, h in hashes.items():
-        old = index.get(rel)
-        if old is not None and old[0] == h:
-            # Hash unchanged — keep existing entry as-is
-            pass
-        elif rel not in [r for r in converted_rels]:
-            # Hash changed but conversion failed or was skipped — update hash, clear tokens
-            index[rel] = (h, index.get(rel, (h, 0))[1])
+        hash_index[rel] = h
 
     # 6. Count tokens for new/changed converted files
-    index_tokens(root, hashes, index, converted_rels)
+    index_tokens(root, hashes, token_index, converted_rels, args.docx_converter)
 
-    # 7. Prune index entries for files that no longer exist
-    stale = [rel for rel in index if rel not in hashes]
-    for rel in stale:
-        del index[rel]
+    # 7. Prune stale entries
+    stale_hash = [rel for rel in hash_index if rel not in hashes]
+    for rel in stale_hash:
+        del hash_index[rel]
 
-    # 8. Save index
-    save_index(root, index)
+    valid_converted = set()
+    for rel in hashes:
+        try:
+            conv_rel = str(converted_path(root / rel, args.docx_converter).relative_to(root))
+            valid_converted.add(conv_rel)
+        except ValueError:
+            pass
+    stale_token = [rel for rel in token_index if rel not in valid_converted]
+    for rel in stale_token:
+        del token_index[rel]
+
+    # 8. Save indices
+    save_hash_index(root, hash_index)
+    save_token_index(root, token_index)
 
     # 9. Summary
-    total_tokens = sum(t for _, t in index.values())
+    total_tokens = sum(token_index.values())
     skipped = len(sources) - len(converted_rels)
     print(f"\nDone. {len(sources)} files indexed, {len(converted_rels)} converted, {skipped} unchanged.")
     print(f"Total tokens across converted files: {total_tokens:,}")
-    print(f"Index written to {INDEX_FILENAME}")
+    print(f"Indices written to {HASH_INDEX_FILENAME} and {TOKEN_INDEX_FILENAME}")
 
 
 if __name__ == "__main__":
