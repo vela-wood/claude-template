@@ -6,9 +6,11 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
 .venv
 .DS_Store
 /.osgrep
 .env
 *.cfg
+*.docx
+*.pdf
+
