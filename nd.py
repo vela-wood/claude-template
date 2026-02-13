@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="NetDocs CLI - browse and download documents"
     )
-    parser.add_argument("--ls", metavar="DOC_ID", help="List files in a folder")
+    parser.add_argument("--ls", metavar="DOC_ID", help="List files in a folder or matter")
     parser.add_argument("--dl", metavar="DOC_ID", help="Download a document")
     parser.add_argument("--version", type=int, default=1, help="Version to download (default: 1)")
     parser.add_argument("--name", help="Output filename (default: derived from document)")
