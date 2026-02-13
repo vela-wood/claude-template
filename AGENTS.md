@@ -97,6 +97,7 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 ### 4.7 Removing PDF artifacts (watermarks, headers, footers)
 
 - If a .pdf.md file contains artifacts, clean it with `uv run python tools/remove_artifacts.py`. 
+- Use the --output flag to overwrite the file
 
 ```
 usage: remove_artifacts.py [-h] [--output OUTPUT] input_md
@@ -113,26 +114,28 @@ options:
 
 ## 5. File discovery and selection
 
-To find relevant files:
+If a file is directly referenced with @, ALWAYS read the entire file into context instead of following the below process which is for research. Otherwise, to find relevant files:
 
-1. **Search instead of guessing**
+1. **Consider total tokens**
+   - If the total tokens across converted files (use `uv run startup.py` if necessary) is under 50k, skip directly to step 4 and read all converted files with Explore subagents.
+
+2. **Search instead of guessing**
    - Use command-line tools to:
      - Enumerate files in the current folder and subfolders.
      - Search for key parties, dates, or issues.
 
-2. **Narrow down candidates**
-   - Prefer:
-     - Newer drafts over obviously older versions.
-     - Files whose names match the matter, client, or task description.
+3. **Narrow down candidates**
+   - Examine the filenames
+     - Prefer newer drafts over older versions.
+     - Look for filenames which are relevant to the task description.
    - If multiple plausible candidates exist, state your selection criteria and, if it matters, ask the user to confirm which to use.
 
-3. **Reading order**
-   - Start with:
-     - Any term sheets, engagement letters, or instructions.
-     - Existing drafts or redlines.
-     - Underlying agreements or pleadings.   
-   - Before reading a file always (1) look up its token count via `grep "filename" .token_index.csv` (if absent, run `uv run startup.py` first) (2) open it using the Explore agent to gauge relevance before determining whether to read it in its entirety.
-   - When reading a .docx.md or .pdf.md file in its entirety into context (i.e., not using the Explore agent) ask the user for confirmation if the file is greated than 10k tokens.
+4. **Reading process**
+   - Always spawn Explore subagents when inspecting files
+   - Generously open files with the Explore subagent, but otherwise be cautious about opening entire files directly
+   - If an Explore subagent indicates that a file is relevant:
+      - Look up its token count via `grep "filename" .token_index.csv` (if absent, run `uv run startup.py` first) 
+      - If loading the file will consume a substantial percentage of the remaining context window, ask the user before proceeding.
 
 ## 6. Standard workflow for legal tasks
 
