@@ -16,3 +16,4 @@ wheels/
 *.csv
 *.eml
 *.msg
+*.doc
