@@ -1,43 +1,38 @@
-## 1. Overview
+# Claude Code Legal Template
 
-This repo is a minimal harness around `AGENTS.md` for running LLM-based legal workflows. The real “logic” of the project lives in the agent instructions, not in complex code.
+This template contains (1) an AGENTS.md file, (2) a variety of python scripts, and (3) a claude skill that have been optimized to make the best use of Claude's 200k (or 1m) context window.
 
-## 2. Repo Contents
+## Claude 4.6 updates
 
-1. `AGENTS.md` – primary operational spec for how the agent must work (startup procedure, tooling rules, journaling).
-2. `main.py` – trivial entrypoint (`uv run python main.py`) used mainly to verify that the environment is wired correctly.
-3. `count_tokens.py` – helper for counting tokens in markdown or other text files via `uv`.
-4. `pyproject.toml` / `uv.lock` – `uv` project configuration and lockfile.
+1. The old `main.py` flow was removed and replaced with a `startup.py`-first workflow.
+2. `startup.py` was updated for better file handling and token indexing.
+3. DOCX editing was standardized on `/superdocs-redlines` (vendored skill lives at `.claude/skills/superdoc-redlines`).
+4. The `superdoc-redlines` integration was moved from submodule to vendored source in-repo.
 
-## 3. Prerequisites
+## Current repo layout
 
-You are expected to have at least:
+1. `AGENTS.md`: primary behavior spec (startup procedure, tooling rules, journaling protocol).
+2. `startup.py`: converts `.pdf/.docx/.eml/.msg` inputs to markdown, updates `.hash_index.csv` and `.token_index.csv`, and surfaces optional features.
+3. `nd.py` + `netdocs/`: NetDocs CLI/TUI integration.
+4. `tools/remove_artifacts.py`: cleans PDF markdown artifacts via API when configured.
+5. `count_tokens.py` and `tools/count_tokens.py`: token-count helper.
+6. `.claude/skills/superdoc-redlines/`: see below
 
-1. **Python environment via `uv`**
-   - Install `uv` (see the official docs) and run all Python commands through it.
-   - Example: `uv run python main.py`
-2. **`osgrep`**
-   - CLI search tool the agent relies on (alongside `rg`, `find`, etc.) for file discovery.
-   - https://github.com/Ryandonofrio3/osgrep
-3. **`cass`**
-   - Chat-history index/search tool used to query prior agent sessions.
-   - https://github.com/Dicklesworthstone/coding_agent_session_search
-   
-If `uv run` fails because of local sandboxing or permission issues, fix your environment first; otherwise the agent will not behave as specified in `AGENTS.md`.
+## Prerequisites
 
-## 4. Typical Workflow
+1. `uv` installed; run Python tasks with `uv run ...`.
+2. Node.js available for the vendored SuperDoc redlining CLI.
+3. Optional environment variables for integrations:
+   - NetDocs: `MATTERS_DB`, `ND_API_KEY`, `NDHELPER_URL`
+   - Artifact cleaning: `ARTIFACT_API_TOKEN`, `ARTIFACT_URL`
 
-1. Place your matter-specific files in this directory (or subdirectories).
-2. Ensure `AGENTS.md` reflects the constraints and tools you actually want the agent to obey.
-3. Confirm `osgrep` and `cass` are on your `PATH` and working (e.g., `cass health`).
-4. Run whatever agent harness you are using (e.g., Codex CLI) with this directory as `$PWD` so `AGENTS.md` governs behavior.
-5. Use `uv run python main.py` only as a sanity check that Python + `uv` are installed; the core interaction is via the agent, not this script.
+## Typical use
 
-## 5. Journaling and History
+1. Put matter files in this workspace.
+2. Run `uv run startup.py` to ensure everything works.
+3. Launch Claude Code.
+4. For DOCX editing/redlines, make sure to use `/superdocs-redlines` via the vendored skill.
 
-The agent is expected to:
+## Attribution
 
-1. Write journal entries into `~/legal/_journal/` with filenames like `{matter_name}_{yyyymmdd}_{taskdescription}.md`.
-2. Use `cass` with `--workspace {matter_name} --robot` to search prior chats when you explicitly authorize it.
-
-If you don’t want this journaling behavior or history search, change `AGENTS.md`; otherwise, assume the agent will follow it exactly.
+This repo contains a fork of **superdoc-redlines** from [yuch85/superdoc-redlines](https://github.com/yuch85/superdoc-redlines/). Check out his [other repos](https://github.com/yuch85/) as well; he is single-handledly pushing the boundaries of legaltech and AI.
