@@ -251,16 +251,13 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    print("Python environment configured.")
-    print("Tools available to agent...")
+    print("Additional features...")
     nd_vars = ("MATTERS_DB", "ND_API_KEY", "NDHELPER_URL")
     if all(os.getenv(var) for var in nd_vars):
-        print("\tNetdocs access")
-
+        print("Netdocs access with\n\tuv run python nd.py -h")
     artifact_vars = ("ARTIFACT_API_TOKEN", "ARTIFACT_URL")
     if all(os.getenv(var) for var in artifact_vars):
-        print("\tPDF artifact removal")
-    print(f"\tDOCX converter: {args.docx_converter}")
+        print("\nMarkdown PDF artifact removal with\n\tuv run python tools/remove_artifacts.py -h")
 
     root = Path.cwd()
 
