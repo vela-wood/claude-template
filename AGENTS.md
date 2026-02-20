@@ -59,7 +59,7 @@ It outputs `.hash_index.csv` (file hashes for change detection) and `.token_inde
 
 Procedure:
 1. **Preferred input = already-converted file**
-   - Never read a binary file file unless directly instructed to, always read its converted markdown version:
+   - Prefer the converted markdown file over the binary file:
      - For `foo.pdf`, read `foo.pdf.md`.
      - For `foo.docx`, read `foo.docx.md`.
    - Be mindful of edited markdown, which will contain `eYYYYMMDD` in the filename as mentioned above.
@@ -93,12 +93,12 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 
 ### 4.6 Editing Word documents
 
-- ONLY use the /superdoc-redlines skill when editing a word document. Do not use any other method.
+- ONLY use the /superdoc-redlines skill to edit word documents. Do not use any other method.
 
 ### 4.7 Removing PDF artifacts (watermarks, headers, footers)
 
 - If a .pdf.md file contains artifacts, clean it with `uv run tools/remove_artifacts.py`. 
-- Use the --output flag to overwrite the file
+- Use the --output flag to overwrite the file in place.
 
 ```
 usage: remove_artifacts.py [-h] [--output OUTPUT] input_md
@@ -115,7 +115,7 @@ options:
 
 ### 4.8 Netdocs access
 
-Only search Netdocs if (1) instructed by the user AND (2) `uv run startup.py` indicated Netdocs access was available.
+Only search Netdocs if (1) instructed by the user AND (2) the output of `uv run startup.py` indicated Netdocs access was available.
 
 NEVER `uv run nd.py` without options, this opens a text user interface intended for humans. Always begin by running the following in a subagent:
 
