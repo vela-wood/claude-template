@@ -15,8 +15,7 @@ This template contains (1) an AGENTS.md file, (2) a variety of python scripts, a
 2. `startup.py`: converts `.pdf/.docx/.eml/.msg` inputs to markdown, updates `.hash_index.csv` and `.token_index.csv`, and surfaces optional features.
 3. `nd.py` + `netdocs/`: NetDocs CLI/TUI integration.
 4. `tools/remove_artifacts.py`: cleans PDF markdown artifacts via API when configured.
-5. `count_tokens.py` and `tools/count_tokens.py`: token-count helper.
-6. `.claude/skills/superdoc-redlines/`: see below
+5. `.claude/skills/superdoc-redlines/`: see below
 
 ## Prerequisites
 
