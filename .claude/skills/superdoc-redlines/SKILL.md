@@ -1,6 +1,6 @@
 ---
 name: superdoc-redlines
-description: CLI tool for AI agents to apply tracked changes and comments to DOCX files using ID-based editing
+description: Edits .docx files. Use when user asks to edit (not merely read) a .docx file. 
 ---
 
 # SuperDoc Redlines Skill
