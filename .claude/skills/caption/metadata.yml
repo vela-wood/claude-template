@@ -1,0 +1,15 @@
+name: caption-cli
+type: reference-documentation
+description: Local CLI workflows for Caption API and Meilisearch using root .env configuration
+version: 0.1.0
+agent_doc: SKILL.md
+commands:
+  - token
+  - search
+  - list_projects
+  - list_folders
+  - create_project
+  - create_folder
+  - edit_project
+  - edit_folder
+  - dl_transcript
