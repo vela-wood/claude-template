@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -43,7 +42,10 @@ def _top_level_help_epilog(specs: Sequence[CommandSpec]) -> str:
         "Global options",
         "  --env-file ENV_FILE      dotenv file loaded before env resolution (default: <repo-root>/.env)",
         "  --cache-path CACHE_PATH  search token cache path (default: search-token.json)",
-        "  --output {json,table,md} output format (default: json, except search=table and dl_transcript=md)",
+        (
+            "  --output {json,table,md} output format "
+            "(default: json, except search/list_projects/list_folders=table and dl_transcript=md)"
+        ),
         "",
         "Command Cheat Sheet",
     ]
@@ -74,7 +76,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, CommandSpec]]:
     )
     parser.add_argument(
         "--cache-path",
-        default=os.getenv("CAPTION_MEILI_CACHE", str(DEFAULT_CACHE_PATH)),
+        default=str(DEFAULT_CACHE_PATH),
     )
     parser.add_argument(
         "--output",
@@ -294,6 +296,7 @@ def _command_specs() -> Sequence[CommandSpec]:
             help="List all projects in the current user's workspace",
             add_arguments=_add_no_arguments,
             handler=_handle_list_projects,
+            default_output="table",
             usage="caption list_projects",
             notes=("Fetches workspace via /users/me/workspace and paginates projects.",),
             example="caption list_projects",
@@ -303,6 +306,7 @@ def _command_specs() -> Sequence[CommandSpec]:
             help="List all folders in the current user's workspace",
             add_arguments=_add_no_arguments,
             handler=_handle_list_folders,
+            default_output="table",
             usage="caption list_folders",
             notes=("Fetches workspace via /users/me/workspace and paginates folders.",),
             example="caption list_folders",

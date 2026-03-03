@@ -9,6 +9,7 @@ wheels/
 .venv
 .DS_Store
 /.osgrep
+/caption_cache/
 .env
 *.cfg
 *.docx
@@ -17,3 +18,4 @@ wheels/
 *.eml
 *.msg
 *.doc
+*.json

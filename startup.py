@@ -2,6 +2,7 @@ import argparse
 import csv
 import hashlib
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -21,6 +22,7 @@ SUPERDOC = (
 
 HASH_INDEX_FILENAME = ".hash_index.csv"
 TOKEN_INDEX_FILENAME = ".token_index.csv"
+CAPTION_OUTPUT_DIRNAME = "caption_cache"
 DOCX_CONVERTER_MARKITDOWN = "markitdown"
 DOCX_CONVERTER_SUPERDOC = "superdoc-redlines"
 DEFAULT_DOCX_CONVERTER = DOCX_CONVERTER_MARKITDOWN
@@ -251,15 +253,23 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
+    root = Path.cwd()
+    caption_output_dir = root / CAPTION_OUTPUT_DIRNAME
+    caption_output_dir.mkdir(parents=True, exist_ok=True)
+    for child in caption_output_dir.iterdir():
+        if child.is_file() or child.is_symlink():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
+
     print("Additional features...")
+    print(f"Caption heavy output directory: {caption_output_dir}")
     nd_vars = ("MATTERS_DB", "ND_API_KEY", "NDHELPER_URL")
     if all(os.getenv(var) for var in nd_vars):
         print("Netdocs access with\n\tuv run python nd.py -h")
     artifact_vars = ("ARTIFACT_API_TOKEN", "ARTIFACT_URL")
     if all(os.getenv(var) for var in artifact_vars):
         print("\nMarkdown PDF artifact removal with\n\tuv run python tools/remove_artifacts.py -h")
-
-    root = Path.cwd()
 
     # 1. Load existing indices
     hash_index = load_hash_index(root)

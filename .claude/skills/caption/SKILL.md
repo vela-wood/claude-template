@@ -15,8 +15,6 @@ Use this skill for:
 - Workspace mutations (`create_project`, `create_folder`, `edit_project`, `edit_folder`)
 - Transcript caption export (`dl_transcript`)
 
-Note that "project" is a transcript of a conversation in caption.
-
 ## Required Environment
 
 The CLI reads env vars from the repo root `.env` by default:
@@ -35,7 +33,7 @@ Optional key:
 Always run commands via:
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py <args>
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py <args>
 ```
 
 This launcher resolves paths dynamically from its own location and enforces:
@@ -43,40 +41,58 @@ This launcher resolves paths dynamically from its own location and enforces:
 - Caption entrypoint: `<repo-root>/caption-cli/caption.py`
 - Default env-file: `<repo-root>/.env` (unless overridden with `--env-file`)
 
+For token-heavy commands (`list_projects`, `list_folders`, `dl_transcript`), the wrapper:
+- Writes full stdout to `<repo-root>/caption_cache/`
+- Overwrites `caption_cache/list_projects.out` for `list_projects`
+- Overwrites `caption_cache/list_folders.out` for `list_folders`
+- Overwrites `caption_cache/<transcript_uuid>.txt` for `dl_transcript`
+- Prints only a short stdout line: `Saved <command> output to <path>`
+
+Retrieve saved output using bash commands:
+
+```bash
+ls -lt caption_cache
+head -n 40 caption_cache/<file>
+```
+
 ## Workflows
 
 ### 1) Search
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py search "term" --limit 5
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py search "term" --limit 5
 ```
 
 ### 2) List workspace data
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py list_projects
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py list_folders
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py list_projects
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py list_folders
 ```
 
 ### 3) Create or edit entities
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py create_project "My Project" --description "First draft"
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py edit_project <project-uuid> --name "Renamed"
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py create_project "My Project" --description "First draft"
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py edit_project <project-uuid> --name "Renamed"
 ```
 
 ### 4) Download transcripts
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py dl_transcript <project-uuid>
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py dl_transcript <transcript-uuid>
 ```
 
 ## Critical Constraints
 
 - Always use the wrapper script so execution stays in the repo Python environment.
+- The caption api was built to allow for multiple transcripts in a project, when calling dl_transcript ALWAYS use transcript_id.
+- However, transcripts and projects are currently 1 to 1.
+- Users will often refer to "meetings" "recordings" "transcripts" and "projects" interchangably. If the user asks to edit or create a new transcript, they mean the project containing such transcript, since the CLI cannot edit individual lines inside transcripts.
+- Reference the cache to minimize unnecessary requests.
+- Validate project uuids before edit/create flows where possible.
 - Keep using the root `.env` unless `--env-file` is explicitly overridden.
 - `token` output is redacted by default. Only use `--show-token` when required.
-- Validate IDs before edit/create flows by listing/searching first when possible.
 - Do not invent command flags not present in `caption --help`.
 
 ## Common Failures

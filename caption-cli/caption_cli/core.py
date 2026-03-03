@@ -16,20 +16,20 @@ DEFAULT_SEARCH_INDEX = "transcript_captions_v1"
 WORKSPACE_LIST_PAGE_SIZE = 100
 PROJECT_OUTPUT_FIELDS = (
     "id",
+    "transcript",
     "createdAt",
     "updatedAt",
     "name",
-    "description",
     "folder",
-    "transcript",
+    "description",
 )
 FOLDER_OUTPUT_FIELDS = (
     "id",
     "createdAt",
     "updatedAt",
     "name",
-    "description",
     "parent",
+    "description",
 )
 
 

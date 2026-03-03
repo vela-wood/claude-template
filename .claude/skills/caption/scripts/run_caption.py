@@ -2,14 +2,23 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+CAPTION_OUTPUT_DIRNAME = "caption_cache"
+TOKEN_HEAVY_COMMANDS = {"list_projects", "list_folders", "dl_transcript"}
+GLOBAL_FLAGS_WITH_VALUE = {"--cache-path", "--output", "--env-file"}
+FIXED_OUTPUT_FILENAMES = {
+    "list_projects": "list_projects.out",
+    "list_folders": "list_folders.out",
+}
+
 
 def _repo_root_from_script() -> Path:
     script_path = Path(__file__).resolve()
-    # .../<repo>/.claude/skills/caption-cli/scripts/run_caption.py
+    # .../<repo>/.claude/skills/caption/scripts/run_caption.py
     return script_path.parents[4]
 
 
@@ -27,6 +36,64 @@ def _has_env_override(argv: list[str]) -> bool:
     return False
 
 
+def _resolve_command(argv: list[str]) -> tuple[str | None, int | None]:
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if any(arg.startswith(f"{flag}=") for flag in GLOBAL_FLAGS_WITH_VALUE):
+            index += 1
+            continue
+        if arg in GLOBAL_FLAGS_WITH_VALUE:
+            index += 2
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return arg, index
+    return None, None
+
+
+def _sanitize_filename_component(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value)
+    return sanitized.strip("._-") or "transcript"
+
+
+def _extract_transcript_id(argv: list[str], command_index: int) -> str | None:
+    index = command_index + 1
+    while index < len(argv):
+        arg = argv[index]
+        if any(arg.startswith(f"{flag}=") for flag in GLOBAL_FLAGS_WITH_VALUE):
+            index += 1
+            continue
+        if arg in GLOBAL_FLAGS_WITH_VALUE:
+            index += 2
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return arg
+    return None
+
+
+def _output_path_for_command(
+    output_dir: Path,
+    command_name: str,
+    argv: list[str],
+    command_index: int | None,
+) -> Path:
+    fixed_name = FIXED_OUTPUT_FILENAMES.get(command_name)
+    if fixed_name:
+        return output_dir / fixed_name
+
+    if command_name == "dl_transcript" and command_index is not None:
+        transcript_id = _extract_transcript_id(argv, command_index)
+        if transcript_id:
+            return output_dir / f"{_sanitize_filename_component(transcript_id)}.txt"
+        return output_dir / "transcript.txt"
+
+    return output_dir / f"{command_name}.out"
+
+
 def main(argv: list[str]) -> int:
     repo_root = _repo_root_from_script()
     caption_entry = repo_root / "caption-cli" / "caption.py"
@@ -39,6 +106,7 @@ def main(argv: list[str]) -> int:
     caption_args = list(argv)
     if not _has_env_override(caption_args):
         caption_args = ["--env-file", str(env_file), *caption_args]
+    command_name, command_index = _resolve_command(caption_args)
 
     cmd = [
         str(_python_bin_for_repo(repo_root)),
@@ -52,6 +120,23 @@ def main(argv: list[str]) -> int:
     child_env["PYTHONPATH"] = (
         caption_module_path if not current_pythonpath else f"{caption_module_path}:{current_pythonpath}"
     )
+    if command_name in TOKEN_HEAVY_COMMANDS:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(repo_root),
+            env=child_env,
+            capture_output=True,
+            text=True,
+        )
+        output_dir = repo_root / CAPTION_OUTPUT_DIRNAME
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = _output_path_for_command(output_dir, command_name, caption_args, command_index)
+        output_path.write_text(completed.stdout, encoding="utf-8")
+        if completed.stderr:
+            print(completed.stderr, end="", file=sys.stderr)
+        print(f"Saved {command_name} output to {output_path}")
+        return completed.returncode
+
     return subprocess.call(cmd, cwd=str(repo_root), env=child_env)
 
 
