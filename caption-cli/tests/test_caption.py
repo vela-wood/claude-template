@@ -852,6 +852,96 @@ def test_transcript_items_to_md_merges_consecutive_speaker_lines() -> None:
         ]
     )
 
+def test_emit_output_search_table_for_transcript_captions_uses_condensed_columns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = {
+        "hits": [
+            {
+                "id": "caption-hit-id",
+                "updatedAt": "2026-02-09T18:41:33.097Z",
+                "format": 1.1,
+                "scope": {"workspaceId": "w-uuid", "folderIds": [], "projectId": "project-uuid-1"},
+                "sessionId": "session-uuid",
+                "speaker": {"id": "speaker-uuid-1", "name": "0:0"},
+                "content": "patent work before and a lot of the money",
+                "createdAt": 1766079084978,
+            }
+        ],
+        "estimatedTotalHits": 1,
+    }
+
+    core.emit_output(payload, "table", command_name="search", search_index="transcript_captions_v1")
+    out = capsys.readouterr().out
+
+    assert "estimatedTotalHits: 1 | returned: 1" in out
+    assert "| # | scope.projectId (uuid) | speaker.name | updatedAt (YYYYMMDD) | content |" in out
+    assert "project-uuid-1" in out
+    assert "20260209" in out
+    assert "speaker.id" not in out
+    assert "sessionId" not in out
+    assert "createdAt" not in out
+
+
+def test_emit_output_json_strips_time_from_created_and_updated_at(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = {
+        "createdAt": "2025-12-11T05:27:42.612Z",
+        "updatedAt": "2025-12-11T05:27:42.618Z",
+        "expiresAt": "2025-12-11T05:27:42.700Z",
+        "items": [
+            {
+                "createdAt": "2025-12-12T00:00:00Z",
+                "updatedAt": "2025-12-13T11:22:33.444Z",
+                "name": "nested",
+            }
+        ],
+    }
+
+    core.emit_output(payload, "json")
+    out = capsys.readouterr().out
+
+    assert json.loads(out) == {
+        "createdAt": "2025-12-11",
+        "updatedAt": "2025-12-11",
+        "expiresAt": "2025-12-11T05:27:42.700Z",
+        "items": [
+            {
+                "createdAt": "2025-12-12",
+                "updatedAt": "2025-12-13",
+                "name": "nested",
+            }
+        ],
+    }
+
+
+def test_emit_output_search_table_for_projects_uses_condensed_columns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = {
+        "hits": [
+            {
+                "id": "project-uuid-1",
+                "updatedAt": "2026-02-09T18:41:33.097Z",
+                "format": 1,
+                "scope": {"workspaceId": "workspace-uuid", "folderIds": []},
+                "name": "Transcript 2026-02-09",
+                "description": None,
+            }
+        ],
+        "estimatedTotalHits": 1,
+    }
+
+    core.emit_output(payload, "table", command_name="search", search_index="projects_v1")
+    out = capsys.readouterr().out
+
+    assert "estimatedTotalHits: 1 | returned: 1" in out
+    assert "| # | id (project uuid) | updatedAt (YYYYMMDD) | name | description |" in out
+    assert "project-uuid-1" in out
+    assert "20260209" in out
+    assert "scope" not in out
+    assert "format" not in out
 
 def test_transcript_items_to_md_rejects_missing_channel() -> None:
     with pytest.raises(core.CliError, match="Transcript item 0 missing integer 'channel'"):
@@ -1016,7 +1106,7 @@ def test_run_dl_transcript_does_not_require_meili_url(
     assert captured.out == "[15:01.23] me: hello there\n[15:01.24] meeting-0: hi\n"
 
 
-def test_run_dl_transcript_with_json_output_emits_raw_payload(
+def test_run_dl_transcript_with_json_output_strips_datetime_suffixes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     set_runtime_env(monkeypatch, meili_url=None)
@@ -1056,7 +1146,19 @@ def test_run_dl_transcript_with_json_output_emits_raw_payload(
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == payload
+    assert json.loads(captured.out) == {
+        "transcriptId": "transcript-uuid",
+        "items": [
+            {
+                "id": "c1",
+                "createdAt": "2025-12-18",
+                "channel": 0,
+                "index": 0,
+                "content": "hello",
+            }
+        ],
+        "count": 1,
+    }
 
 
 def test_run_create_project_does_not_require_meili_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

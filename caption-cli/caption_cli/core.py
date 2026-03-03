@@ -16,20 +16,20 @@ DEFAULT_SEARCH_INDEX = "transcript_captions_v1"
 WORKSPACE_LIST_PAGE_SIZE = 100
 PROJECT_OUTPUT_FIELDS = (
     "id",
-    "createdAt",
-    "updatedAt",
+    "transcript",
     "name",
     "description",
     "folder",
-    "transcript",
+    "createdAt",
+    "updatedAt",
 )
 FOLDER_OUTPUT_FIELDS = (
     "id",
-    "createdAt",
-    "updatedAt",
     "name",
     "description",
     "parent",
+    "createdAt",
+    "updatedAt",
 )
 
 
@@ -360,6 +360,29 @@ def _to_yyyymmdd(value: Any) -> str:
     return ""
 
 
+def _strip_datetime_after_date(value: Any) -> Any:
+    if not isinstance(value, str) or len(value) < 10:
+        return value
+    candidate = value[:10]
+    if candidate[4] == "-" and candidate[7] == "-":
+        return candidate
+    return value
+
+
+def _normalize_created_and_updated_dates(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"createdAt", "updatedAt"}:
+                normalized[key] = _strip_datetime_after_date(item)
+            else:
+                normalized[key] = _normalize_created_and_updated_dates(item)
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_created_and_updated_dates(item) for item in value]
+    return value
+
+
 def _search_summary_header(value: Mapping[str, Any], hits: Sequence[Mapping[str, Any]]) -> list[str]:
     return [f"estimatedTotalHits: {value.get('estimatedTotalHits')} | returned: {len(hits)}"]
 
@@ -511,8 +534,9 @@ def emit_output(
     command_name: str | None = None,
     search_index: str | None = None,
 ) -> None:
+    normalized_value = _normalize_created_and_updated_dates(value)
     if output_format == "json":
-        print(json.dumps(value, indent=2))
+        print(json.dumps(normalized_value, indent=2))
         return
     if output_format == "md" and _is_transcript_payload(value):
         items = value["items"]
@@ -521,6 +545,6 @@ def emit_output(
         print(_transcript_items_to_md(items))
         return
     if output_format == "table" and command_name == "search":
-        print(_render_search_summary_table(value, search_index))
+        print(_render_search_summary_table(normalized_value, search_index))
         return
-    print(_render_table(value))
+    print(_render_table(normalized_value))

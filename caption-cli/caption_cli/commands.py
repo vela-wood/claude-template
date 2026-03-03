@@ -98,10 +98,8 @@ def _command_list_workspace_items(
             break
 
     return {
-        "workspaceId": workspace_id,
         "items": items_out,
         "count": len(items_out),
-        "totalCount": total_count if total_count is not None else len(items_out),
         "totalPages": total_pages if total_pages is not None else 0,
     }
 
