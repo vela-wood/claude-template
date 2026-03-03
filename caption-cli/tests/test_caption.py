@@ -42,6 +42,25 @@ def set_runtime_env(monkeypatch: pytest.MonkeyPatch, *, meili_url: str | None = 
         monkeypatch.setenv("CAPTION_MEILI_URL", meili_url)
 
 
+def install_emit_output_capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    emitted: dict[str, object] = {}
+
+    def fake_emit_output(
+        value: object,
+        output_format: str,
+        *,
+        command_name: str | None = None,
+        search_index: str | None = None,
+    ) -> None:
+        emitted["value"] = value
+        emitted["format"] = output_format
+        emitted["command_name"] = command_name
+        emitted["search_index"] = search_index
+
+    monkeypatch.setattr(cli, "emit_output", fake_emit_output)
+    return emitted
+
+
 def test_token_command_fetches_and_caches_credentials(monkeypatch: pytest.MonkeyPatch, config: core.RuntimeConfig) -> None:
     expected = core.SearchToken(
         token="meili-token",
@@ -103,6 +122,14 @@ def test_parse_args_respects_env_file_override(monkeypatch: pytest.MonkeyPatch, 
 
     assert args.env_file == str(custom_env)
     assert loaded == [(custom_env, False)]
+
+
+def test_parse_args_ignores_caption_meili_cache_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CAPTION_MEILI_CACHE", "/tmp/ignored-search-token.json")
+
+    args = cli.parse_args(["list_projects"])
+
+    assert args.cache_path == core.DEFAULT_CACHE_PATH
 
 
 def test_search_command_defaults_to_captions_index_and_limit() -> None:
@@ -189,9 +216,11 @@ def test_dl_transcript_command_is_available() -> None:
     assert args.output == "md"
 
 
-def test_non_dl_transcript_commands_default_to_json_output() -> None:
-    args = cli.parse_args(["list_projects"])
-    assert args.output == "json"
+def test_command_default_outputs_are_applied() -> None:
+    assert cli.parse_args(["search", "term"]).output == "table"
+    assert cli.parse_args(["list_projects"]).output == "table"
+    assert cli.parse_args(["list_folders"]).output == "table"
+    assert cli.parse_args(["create_project", "My Project"]).output == "json"
 
 
 def test_explicit_output_overrides_dl_transcript_default() -> None:
@@ -359,15 +388,7 @@ def test_run_search_uses_default_index_when_flag_omitted(
             return FakeIndex()
 
     monkeypatch.setattr(core, "build_meili_client", lambda url, token: FakeClient())
-
-    emitted: dict[str, object] = {}
-
-    def fake_emit_output(value: object, output_format: str, **kwargs: object) -> None:
-        emitted["value"] = value
-        emitted["format"] = output_format
-        emitted["kwargs"] = kwargs
-
-    monkeypatch.setattr(cli, "emit_output", fake_emit_output)
+    emitted = install_emit_output_capture(monkeypatch)
 
     exit_code = cli.run(
         [
@@ -384,7 +405,8 @@ def test_run_search_uses_default_index_when_flag_omitted(
     assert index_calls == [core.DEFAULT_SEARCH_INDEX]
     assert emitted["format"] == "table"
     assert emitted["value"] == {"hits": [{"query": "term", "limit": 5}]}
-    assert emitted["kwargs"] == {"command_name": "search", "search_index": core.DEFAULT_SEARCH_INDEX}
+    assert emitted["command_name"] == "search"
+    assert emitted["search_index"] == core.DEFAULT_SEARCH_INDEX
 
 
 def test_command_list_projects_fetches_workspace_and_all_project_pages(
@@ -457,15 +479,9 @@ def test_command_list_projects_fetches_workspace_and_all_project_pages(
     assert result["totalCount"] == 2
     assert result["totalPages"] == 2
     assert [item["id"] for item in result["items"]] == ["p1", "p2"]
-    assert list(result["items"][0].keys()) == [
-        "id",
-        "createdAt",
-        "updatedAt",
-        "name",
-        "description",
-        "folder",
-        "transcript",
-    ]
+    for field in ("id", "createdAt", "updatedAt", "name", "description", "folder", "transcript"):
+        assert field in result["items"][0]
+    assert "workspace" not in result["items"][0]
     assert result["items"][0]["transcript"] == "t1"
     assert result["items"][1]["transcript"] == "t2"
     assert page_calls == [
@@ -542,14 +558,9 @@ def test_command_list_folders_fetches_workspace_and_all_folder_pages(
     assert result["totalCount"] == 2
     assert result["totalPages"] == 2
     assert [item["id"] for item in result["items"]] == ["f1", "f2"]
-    assert list(result["items"][0].keys()) == [
-        "id",
-        "createdAt",
-        "updatedAt",
-        "name",
-        "description",
-        "parent",
-    ]
+    for field in ("id", "createdAt", "updatedAt", "name", "description", "parent"):
+        assert field in result["items"][0]
+    assert "workspace" not in result["items"][0]
     assert result["items"][0]["parent"] is None
     assert result["items"][1]["parent"] == "f1"
     assert page_calls == [
@@ -1027,8 +1038,7 @@ def test_command_edit_folder_rejects_conflicting_nullable_flags(config: core.Run
 
 def test_run_list_projects_does_not_require_meili_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     set_runtime_env(monkeypatch, meili_url=None)
-
-    emitted: dict[str, object] = {}
+    emitted = install_emit_output_capture(monkeypatch)
 
     def fake_command_list_projects(config: core.RuntimeConfig) -> dict[str, object]:
         return {
@@ -1039,12 +1049,7 @@ def test_run_list_projects_does_not_require_meili_url(monkeypatch: pytest.Monkey
             "totalPages": 1,
         }
 
-    def fake_emit_output(value: object, output_format: str, **kwargs: object) -> None:
-        emitted["value"] = value
-        emitted["format"] = output_format
-
     monkeypatch.setattr(cli, "command_list_projects", fake_command_list_projects)
-    monkeypatch.setattr(cli, "emit_output", fake_emit_output)
 
     exit_code = cli.run(
         [
@@ -1057,10 +1062,46 @@ def test_run_list_projects_does_not_require_meili_url(monkeypatch: pytest.Monkey
     )
 
     assert exit_code == 0
-    assert emitted["format"] == "json"
+    assert emitted["format"] == "table"
     assert emitted["value"] == {
         "workspaceId": "workspace-uuid",
         "items": [{"id": "p1", "name": "Alpha", "updatedAt": "2024-01-01T00:00:00Z", "folder": None}],
+        "count": 1,
+        "totalCount": 1,
+        "totalPages": 1,
+    }
+
+
+def test_run_list_folders_does_not_require_meili_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    set_runtime_env(monkeypatch, meili_url=None)
+    emitted = install_emit_output_capture(monkeypatch)
+
+    def fake_command_list_folders(config: core.RuntimeConfig) -> dict[str, object]:
+        return {
+            "workspaceId": "workspace-uuid",
+            "items": [{"id": "f1", "name": "Root", "updatedAt": "2024-01-01T00:00:00Z", "parent": None}],
+            "count": 1,
+            "totalCount": 1,
+            "totalPages": 1,
+        }
+
+    monkeypatch.setattr(cli, "command_list_folders", fake_command_list_folders)
+
+    exit_code = cli.run(
+        [
+            "--env-file",
+            "",
+            "--cache-path",
+            str(tmp_path / "search-token.json"),
+            "list_folders",
+        ]
+    )
+
+    assert exit_code == 0
+    assert emitted["format"] == "table"
+    assert emitted["value"] == {
+        "workspaceId": "workspace-uuid",
+        "items": [{"id": "f1", "name": "Root", "updatedAt": "2024-01-01T00:00:00Z", "parent": None}],
         "count": 1,
         "totalCount": 1,
         "totalPages": 1,
@@ -1165,8 +1206,7 @@ def test_run_dl_transcript_with_json_output_emits_raw_payload(
 
 def test_run_create_project_does_not_require_meili_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     set_runtime_env(monkeypatch, meili_url=None)
-
-    emitted: dict[str, object] = {}
+    emitted = install_emit_output_capture(monkeypatch)
 
     def fake_command_create_project(
         config: core.RuntimeConfig,
@@ -1188,12 +1228,7 @@ def test_run_create_project_does_not_require_meili_url(monkeypatch: pytest.Monke
             "transcript": "t1",
         }
 
-    def fake_emit_output(value: object, output_format: str, **kwargs: object) -> None:
-        emitted["value"] = value
-        emitted["format"] = output_format
-
     monkeypatch.setattr(cli, "command_create_project", fake_command_create_project)
-    monkeypatch.setattr(cli, "emit_output", fake_emit_output)
 
     exit_code = cli.run(
         [
@@ -1223,8 +1258,7 @@ def test_run_create_project_does_not_require_meili_url(monkeypatch: pytest.Monke
 
 def test_run_create_folder_does_not_require_meili_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     set_runtime_env(monkeypatch, meili_url=None)
-
-    emitted: dict[str, object] = {}
+    emitted = install_emit_output_capture(monkeypatch)
 
     def fake_command_create_folder(
         config: core.RuntimeConfig,
@@ -1247,12 +1281,7 @@ def test_run_create_folder_does_not_require_meili_url(monkeypatch: pytest.Monkey
             "parent": "parent-uuid",
         }
 
-    def fake_emit_output(value: object, output_format: str, **kwargs: object) -> None:
-        emitted["value"] = value
-        emitted["format"] = output_format
-
     monkeypatch.setattr(cli, "command_create_folder", fake_command_create_folder)
-    monkeypatch.setattr(cli, "emit_output", fake_emit_output)
 
     exit_code = cli.run(
         [

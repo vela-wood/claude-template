@@ -5,13 +5,23 @@
 Use:
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py <global-flags> <command> [command-flags]
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py <global-flags> <command> [command-flags]
 ```
 
 Global flags:
 - `--cache-path <path>`
 - `--output json|table|md`
 - `--env-file <path>` (override root `.env` only when explicitly required)
+
+Token-heavy wrapper behavior (`list_projects`, `list_folders`, `dl_transcript`):
+- `list_projects` overwrites `<repo-root>/caption_cache/list_projects.out`
+- `list_folders` overwrites `<repo-root>/caption_cache/list_folders.out`
+- `dl_transcript` overwrites `<repo-root>/caption_cache/<transcript_uuid>.txt`
+- Terminal stdout is only: `Saved <command> output to <path>`
+- Inspect saved output with:
+  - `ls -lt caption_cache`
+  - `tail -n 40 caption_cache/<file>`
+  - `cat caption_cache/<file>`
 
 ## `token`
 

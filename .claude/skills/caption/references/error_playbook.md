@@ -13,7 +13,7 @@ Recovery:
 3. Re-run with explicit env file if needed:
 
 ```bash
-./.venv/bin/python .claude/skills/caption-cli/scripts/run_caption.py --env-file <repo-root>/.env list_projects
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py --env-file <repo-root>/.env list_projects
 ```
 
 ## Token/Auth Failures on Search
@@ -63,3 +63,15 @@ Recovery:
 - `token` is redacted by default.
 - Only use `--show-token` when raw token output is explicitly required.
 - Never paste raw tokens into shared logs, tickets, or chat.
+
+## Token-Heavy Command Output Location
+
+Symptoms:
+- `list_projects`, `list_folders`, or `dl_transcript` only prints `Saved <command> output to <path>`
+
+Recovery:
+1. List recent files: `ls -lt caption_cache`
+2. `list_projects` and `list_folders` always overwrite `caption_cache/list_projects.out` and `caption_cache/list_folders.out`.
+3. `dl_transcript` always overwrites `caption_cache/<transcript_uuid>.txt`.
+4. Preview output: `tail -n 40 caption_cache/<file>`
+5. Read full output when needed: `cat caption_cache/<file>`
