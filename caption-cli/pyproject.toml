@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "caption-cli"
 version = "0.1.0"
 description = "Search-focused Caption CLI."
-requires-python = ">=3.12"
+requires-python = ">=3.10,<3.11"
 dependencies = [
   "httpx>=0.28.1",
   "meilisearch>=0.40.0",
