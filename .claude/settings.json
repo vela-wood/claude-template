@@ -6,5 +6,18 @@
       "Bash(npm view:*)",
       "Bash(node superdoc-redline.mjs:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "clawmoat scan"
+          }
+        ]
+      }
+    ]
   }
 }
