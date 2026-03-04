@@ -1,9 +1,9 @@
 import argparse
 import csv
-import hashlib
 import os
 import shutil
 import subprocess
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -49,9 +49,12 @@ _encoding = tiktoken.get_encoding("cl100k_base")
 
 
 def hash_file(path: Path) -> str:
-    """Return blake2b hex digest of a file, streaming to avoid large allocations."""
+    """Return CRC32 hex digest of a file, streaming to avoid large allocations."""
+    checksum = 0
     with open(path, "rb") as f:
-        return hashlib.file_digest(f, "blake2b").hexdigest()
+        while chunk := f.read(1024 * 1024):
+            checksum = zlib.crc32(chunk, checksum)
+    return f"{checksum & 0xFFFFFFFF:08x}"
 
 
 def count_tokens(path: Path) -> int:
