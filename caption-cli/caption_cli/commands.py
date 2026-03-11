@@ -61,48 +61,27 @@ def _command_list_workspace_items(
     api_token = _require_api_token(config)
     workspace_id = fetch_current_workspace_id(api_url, api_token)
 
+    raw_items = fetch_workspace_items_page(
+        api_url,
+        api_token,
+        workspace_id,
+        endpoint,
+        page=0,
+        limit=WORKSPACE_LIST_PAGE_SIZE,
+    )
+    path = f"/folders/{{folderId}}/{endpoint}"
     items_out: list[dict[str, Any]] = []
-    page = 0
-    total_pages: int | None = None
-    total_count: int | None = None
-
-    while True:
-        payload = fetch_workspace_items_page(
-            api_url,
-            api_token,
-            workspace_id,
-            endpoint,
-            page=page,
-            limit=WORKSPACE_LIST_PAGE_SIZE,
-        )
-        raw_items = payload.get("items")
-        path = f"/workspaces/{{workspaceId}}/{endpoint}"
-        if not isinstance(raw_items, list):
-            raise CliError(f"{path} response missing array 'items'")
-        for item in raw_items:
-            if not isinstance(item, dict):
-                raise CliError(f"{path} response contains non-object item")
-            items_out.append(item_view(item))
-
-        raw_total_pages = payload.get("totalPages")
-        if not isinstance(raw_total_pages, int):
-            raise CliError(f"{path} response missing integer 'totalPages'")
-        total_pages = raw_total_pages
-
-        raw_total_count = payload.get("totalCount")
-        if isinstance(raw_total_count, int):
-            total_count = raw_total_count
-
-        page += 1
-        if page >= total_pages:
-            break
+    for item in raw_items:
+        if not isinstance(item, dict):
+            raise CliError(f"{path} response contains non-object item")
+        items_out.append(item_view(item))
 
     return {
         "workspaceId": workspace_id,
         "items": items_out,
         "count": len(items_out),
-        "totalCount": total_count if total_count is not None else len(items_out),
-        "totalPages": total_pages if total_pages is not None else 0,
+        "totalCount": len(items_out),
+        "totalPages": 1,
     }
 
 
@@ -213,7 +192,7 @@ def command_create_project(
         api_url,
         api_token,
         "POST",
-        f"/workspaces/{resolved_workspace_id}/projects",
+        f"/folders/{resolved_workspace_id}/projects",
         json_body=body,
         expected_statuses={201},
     )
@@ -244,9 +223,9 @@ def command_create_folder(
         api_url,
         api_token,
         "POST",
-        f"/workspaces/{resolved_workspace_id}/folders",
+        f"/folders/{resolved_workspace_id}/folders",
         json_body=body,
-        expected_statuses={200},
+        expected_statuses={200, 201},
     )
     return _folder_view(payload)
 
@@ -316,7 +295,7 @@ def command_edit_folder(
         api_url,
         api_token,
         "PATCH",
-        f"/workspaces/folders/{cleaned_folder_id}",
+        f"/folders/{cleaned_folder_id}",
         json_body=body,
         expected_statuses={200},
     )

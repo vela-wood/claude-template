@@ -178,9 +178,9 @@ def _folder_view(folder_payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def fetch_current_workspace_id(api_url: str, api_token: str) -> str:
     payload = _authorized_get(api_url, api_token, "/users/me/workspace")
-    workspace_id = payload.get("id")
+    workspace_id = payload.get("root")
     if not isinstance(workspace_id, str) or not workspace_id.strip():
-        raise CliError("/users/me/workspace response missing string 'id'")
+        raise CliError("/users/me/workspace response missing string 'root'")
     return workspace_id
 
 
@@ -192,12 +192,11 @@ def fetch_workspace_items_page(
     *,
     page: int,
     limit: int = WORKSPACE_LIST_PAGE_SIZE,
-) -> Mapping[str, Any]:
-    return _authorized_get(
+) -> list[Mapping[str, Any]]:
+    return _authorized_get_list_of_objects(
         api_url,
         api_token,
-        f"/workspaces/{workspace_id}/{endpoint}",
-        params={"page": page, "limit": limit},
+        f"/folders/{workspace_id}/{endpoint}",
     )
 
 

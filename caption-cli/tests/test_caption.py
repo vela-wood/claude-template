@@ -409,7 +409,7 @@ def test_run_search_uses_default_index_when_flag_omitted(
     assert emitted["search_index"] == core.DEFAULT_SEARCH_INDEX
 
 
-def test_command_list_projects_fetches_workspace_and_all_project_pages(
+def test_command_list_projects_fetches_workspace_and_all_projects(
     monkeypatch: pytest.MonkeyPatch,
     config: core.RuntimeConfig,
 ) -> None:
@@ -428,46 +428,33 @@ def test_command_list_projects_fetches_workspace_and_all_project_pages(
         *,
         page: int,
         limit: int,
-    ) -> dict[str, object]:
+    ) -> list[dict[str, object]]:
         page_calls.append((workspace_id, endpoint, page, limit))
         assert endpoint == "projects"
-        if page == 0:
-            return {
-                "items": [
-                    {
-                        "id": "p1",
-                        "createdAt": "2023-12-31T00:00:00Z",
-                        "updatedAt": "2024-01-01T00:00:00Z",
-                        "name": "Alpha",
-                        "description": "First",
-                        "folder": None,
-                        "transcript": "t1",
-                        "workspace": "w1",
-                        "createdBy": "u1",
-                    }
-                ],
-                "count": 1,
-                "totalCount": 2,
-                "totalPages": 2,
-            }
-        return {
-            "items": [
-                {
-                    "id": "p2",
-                    "createdAt": "2024-01-01T00:00:00Z",
-                    "updatedAt": "2024-01-02T00:00:00Z",
-                    "name": "Beta",
-                    "description": None,
-                    "folder": "f1",
-                    "transcript": "t2",
-                    "workspace": "w1",
-                    "updatedBy": "u2",
-                }
-            ],
-            "count": 1,
-            "totalCount": 2,
-            "totalPages": 2,
-        }
+        return [
+            {
+                "id": "p1",
+                "createdAt": "2023-12-31T00:00:00Z",
+                "updatedAt": "2024-01-01T00:00:00Z",
+                "name": "Alpha",
+                "description": "First",
+                "folder": None,
+                "transcript": "t1",
+                "workspace": "w1",
+                "createdBy": "u1",
+            },
+            {
+                "id": "p2",
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-02T00:00:00Z",
+                "name": "Beta",
+                "description": None,
+                "folder": "f1",
+                "transcript": "t2",
+                "workspace": "w1",
+                "updatedBy": "u2",
+            },
+        ]
 
     monkeypatch.setattr(commands, "fetch_current_workspace_id", fake_fetch_current_workspace_id)
     monkeypatch.setattr(commands, "fetch_workspace_items_page", fake_fetch_workspace_items_page)
@@ -477,7 +464,7 @@ def test_command_list_projects_fetches_workspace_and_all_project_pages(
     assert result["workspaceId"] == "workspace-uuid"
     assert result["count"] == 2
     assert result["totalCount"] == 2
-    assert result["totalPages"] == 2
+    assert result["totalPages"] == 1
     assert [item["id"] for item in result["items"]] == ["p1", "p2"]
     for field in ("id", "createdAt", "updatedAt", "name", "description", "folder", "transcript"):
         assert field in result["items"][0]
@@ -486,11 +473,10 @@ def test_command_list_projects_fetches_workspace_and_all_project_pages(
     assert result["items"][1]["transcript"] == "t2"
     assert page_calls == [
         ("workspace-uuid", "projects", 0, core.WORKSPACE_LIST_PAGE_SIZE),
-        ("workspace-uuid", "projects", 1, core.WORKSPACE_LIST_PAGE_SIZE),
     ]
 
 
-def test_command_list_folders_fetches_workspace_and_all_folder_pages(
+def test_command_list_folders_fetches_workspace_and_all_folders(
     monkeypatch: pytest.MonkeyPatch,
     config: core.RuntimeConfig,
 ) -> None:
@@ -509,44 +495,31 @@ def test_command_list_folders_fetches_workspace_and_all_folder_pages(
         *,
         page: int,
         limit: int,
-    ) -> dict[str, object]:
+    ) -> list[dict[str, object]]:
         page_calls.append((workspace_id, endpoint, page, limit))
         assert endpoint == "folders"
-        if page == 0:
-            return {
-                "items": [
-                    {
-                        "id": "f1",
-                        "createdAt": "2024-01-01T00:00:00Z",
-                        "updatedAt": "2024-01-02T00:00:00Z",
-                        "name": "Alpha Folder",
-                        "description": "Top level",
-                        "parent": None,
-                        "workspace": "w1",
-                        "createdBy": "u1",
-                    }
-                ],
-                "count": 1,
-                "totalCount": 2,
-                "totalPages": 2,
-            }
-        return {
-            "items": [
-                {
-                    "id": "f2",
-                    "createdAt": "2024-01-03T00:00:00Z",
-                    "updatedAt": "2024-01-04T00:00:00Z",
-                    "name": "Child Folder",
-                    "description": None,
-                    "parent": "f1",
-                    "workspace": "w1",
-                    "updatedBy": "u2",
-                }
-            ],
-            "count": 1,
-            "totalCount": 2,
-            "totalPages": 2,
-        }
+        return [
+            {
+                "id": "f1",
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-02T00:00:00Z",
+                "name": "Alpha Folder",
+                "description": "Top level",
+                "parent": None,
+                "workspace": "w1",
+                "createdBy": "u1",
+            },
+            {
+                "id": "f2",
+                "createdAt": "2024-01-03T00:00:00Z",
+                "updatedAt": "2024-01-04T00:00:00Z",
+                "name": "Child Folder",
+                "description": None,
+                "parent": "f1",
+                "workspace": "w1",
+                "updatedBy": "u2",
+            },
+        ]
 
     monkeypatch.setattr(commands, "fetch_current_workspace_id", fake_fetch_current_workspace_id)
     monkeypatch.setattr(commands, "fetch_workspace_items_page", fake_fetch_workspace_items_page)
@@ -556,7 +529,7 @@ def test_command_list_folders_fetches_workspace_and_all_folder_pages(
     assert result["workspaceId"] == "workspace-uuid"
     assert result["count"] == 2
     assert result["totalCount"] == 2
-    assert result["totalPages"] == 2
+    assert result["totalPages"] == 1
     assert [item["id"] for item in result["items"]] == ["f1", "f2"]
     for field in ("id", "createdAt", "updatedAt", "name", "description", "parent"):
         assert field in result["items"][0]
@@ -565,7 +538,6 @@ def test_command_list_folders_fetches_workspace_and_all_folder_pages(
     assert result["items"][1]["parent"] == "f1"
     assert page_calls == [
         ("workspace-uuid", "folders", 0, core.WORKSPACE_LIST_PAGE_SIZE),
-        ("workspace-uuid", "folders", 1, core.WORKSPACE_LIST_PAGE_SIZE),
     ]
 
 
@@ -612,7 +584,7 @@ def test_command_create_project_uses_workspace_lookup_and_returns_filtered_proje
             "http://localhost:8000",
             "api-token",
             "POST",
-            "/workspaces/workspace-uuid/projects",
+            "/folders/workspace-uuid/projects",
             {"name": "My Project", "description": "Desc"},
             {201},
         )
@@ -657,7 +629,7 @@ def test_command_create_project_uses_explicit_workspace_id(
     monkeypatch.setattr(commands, "_authorized_request", fake_authorized_request)
 
     commands.command_create_project(config, name="Explicit", description=None, workspace_id="workspace-explicit")
-    assert paths == ["/workspaces/workspace-explicit/projects"]
+    assert paths == ["/folders/workspace-explicit/projects"]
 
 
 def test_command_create_folder_uses_folder_endpoint_and_returns_filtered_folder(
@@ -708,9 +680,9 @@ def test_command_create_folder_uses_folder_endpoint_and_returns_filtered_folder(
             "http://localhost:8000",
             "api-token",
             "POST",
-            "/workspaces/workspace-uuid/folders",
+            "/folders/workspace-uuid/folders",
             {"name": "My Folder", "description": "Desc", "parent": "parent-uuid"},
-            {200},
+            {200, 201},
         )
     ]
     assert result == {
@@ -826,7 +798,7 @@ def test_command_edit_folder_patches_folder_and_returns_filtered_fields(
             "http://localhost:8000",
             "api-token",
             "PATCH",
-            "/workspaces/folders/folder-uuid",
+            "/folders/folder-uuid",
             {"name": "Renamed Folder", "description": None, "parent": None},
             {200},
         )
