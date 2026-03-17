@@ -36,8 +36,9 @@ EMAIL_SUFFIXES = {
     ".mhtml",
     ".oft",
 }
-MARKITDOWN_MD_SUFFIXES = {".pdf"} | EMAIL_SUFFIXES
-SOURCE_SUFFIXES = MARKITDOWN_MD_SUFFIXES | {".docx"}
+NATIVE_EMAIL_SUFFIXES = {".eml", ".emlx"}
+MARKITDOWN_MD_SUFFIXES = {".pdf"} | (EMAIL_SUFFIXES - NATIVE_EMAIL_SUFFIXES)
+SOURCE_SUFFIXES = MARKITDOWN_MD_SUFFIXES | NATIVE_EMAIL_SUFFIXES | {".docx"}
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")
@@ -66,7 +67,7 @@ def count_tokens(path: Path) -> int:
 def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -> Path:
     """Return the expected converted-file path for a source file."""
     suffix = source.suffix.lower()
-    if suffix in MARKITDOWN_MD_SUFFIXES:
+    if suffix in MARKITDOWN_MD_SUFFIXES or suffix in NATIVE_EMAIL_SUFFIXES:
         return source.parent / f"{source.name}.md"
     if suffix == ".docx":
         suffix = "md" if docx_converter == DOCX_CONVERTER_MARKITDOWN else "json"
@@ -135,6 +136,36 @@ def _convert_one_markitdown(source: Path, md_path: Path) -> None:
     )
 
 
+def _convert_one_email(source: Path, md_path: Path) -> None:
+    """Convert .eml/.emlx to clean markdown using Python's email module."""
+    import email as _email
+    from email import policy as _policy
+
+    with open(source, "rb") as f:
+        msg = _email.message_from_binary_file(f, policy=_policy.default)
+
+    lines = [
+        f"# {msg['subject'] or '(no subject)'}",
+        "",
+        f"**From:** {msg['from']}",
+        f"**To:** {msg['to']}",
+    ]
+    if msg["cc"]:
+        lines.append(f"**CC:** {msg['cc']}")
+    lines += [f"**Date:** {msg['date']}", "", "---", ""]
+
+    body = None
+    for part in msg.walk():
+        if part.get_content_type() == "text/plain":
+            try:
+                body = part.get_content()
+            except Exception:
+                body = part.get_payload(decode=True).decode("utf-8", errors="replace")
+            break
+    lines.append(body if body else "(no text content)")
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _convert_one_docx_superdoc(docx: Path, json_path: Path) -> None:
     result = subprocess.run(
         ["node", str(SUPERDOC), "read", "--input", str(docx), "--no-metadata"],
@@ -172,7 +203,9 @@ def convert_files(
         out = converted_path(src, docx_converter)
         print(f"\t{rel} -> {out.name}")
         suffix = src.suffix.lower()
-        if suffix in MARKITDOWN_MD_SUFFIXES:
+        if suffix in NATIVE_EMAIL_SUFFIXES:
+            _convert_one_email(src, out)
+        elif suffix in MARKITDOWN_MD_SUFFIXES:
             _convert_one_markitdown(src, out)
         elif suffix == ".docx":
             if docx_converter == DOCX_CONVERTER_MARKITDOWN:
