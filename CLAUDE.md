@@ -92,7 +92,7 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 
 ### 4.6 Editing Word documents
 
-- ONLY use the /superdoc-redlines skill to edit word documents. Do not use any other method.
+- ONLY use the /redline skill to edit word documents. Do not use any other method.
 
 ### 4.7 Removing PDF artifacts (watermarks, headers, footers)
 

@@ -1,0 +1,10 @@
+name: redline
+type: reference-documentation
+description: Repo-local Adeu CLI workflows for DOCX redlining and review
+version: 0.1.0
+agent_doc: SKILL.md
+commands:
+  - extract
+  - diff
+  - markup
+  - apply

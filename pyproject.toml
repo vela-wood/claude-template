@@ -3,8 +3,9 @@ name = "template"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.14,<3.15"
 dependencies = [
+    "adeu @ git+https://github.com/dealfluence/adeu.git",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "markitdown[pdf, docx, pptx, outlook]",
