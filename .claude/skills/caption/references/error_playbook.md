@@ -16,6 +16,15 @@ Recovery:
 ./.venv/bin/python .claude/skills/caption/scripts/run_caption.py --env-file <repo-root>/.env list_projects
 ```
 
+## Missing Installed CLI
+
+Symptoms:
+- `caption binary not found at <repo-root>/.venv/bin/caption`
+
+Recovery:
+1. Run `uv sync` at the repo root.
+2. Re-run the wrapper command after the root `.venv` has been refreshed.
+
 ## Token/Auth Failures on Search
 
 Symptoms:

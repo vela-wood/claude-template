@@ -4,17 +4,17 @@ from pathlib import Path
 import asyncpg
 import pyperclip
 import requests
-from dotenv import load_dotenv
 from textual import work
 from textual.app import App, ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import Header, Footer, Input, DataTable
 from textual_fspicker import SelectDirectory
 
+from .env import load_repo_dotenv
 from .config import load_config, save_config, add_recent_matter, SEARCH_QUERY
 from .screens import FilesScreen
 
-load_dotenv()
+load_repo_dotenv(__file__)
 
 
 class NDHelper:

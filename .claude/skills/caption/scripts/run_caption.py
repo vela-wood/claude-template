@@ -22,11 +22,14 @@ def _repo_root_from_script() -> Path:
     return script_path.parents[4]
 
 
-def _python_bin_for_repo(repo_root: Path) -> Path:
-    repo_venv_python = repo_root / ".venv" / "bin" / "python"
-    if repo_venv_python.exists():
-        return repo_venv_python
-    return Path(sys.executable)
+def _ensure_repo_imports(repo_root: Path) -> None:
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+
+
+def _caption_bin_for_repo(repo_root: Path) -> Path:
+    return repo_root / ".venv" / "bin" / "caption"
 
 
 def _has_env_override(argv: list[str]) -> bool:
@@ -34,6 +37,15 @@ def _has_env_override(argv: list[str]) -> bool:
         if arg == "--env-file" or arg.startswith("--env-file="):
             return True
     return False
+
+
+def _env_file_from_argv(argv: list[str], repo_root: Path) -> Path:
+    for index, arg in enumerate(argv):
+        if arg == "--env-file" and index + 1 < len(argv):
+            return Path(argv[index + 1]).expanduser()
+        if arg.startswith("--env-file="):
+            return Path(arg.split("=", 1)[1]).expanduser()
+    return repo_root / ".env"
 
 
 def _resolve_command(argv: list[str]) -> tuple[str | None, int | None]:
@@ -96,11 +108,16 @@ def _output_path_for_command(
 
 def main(argv: list[str]) -> int:
     repo_root = _repo_root_from_script()
-    caption_entry = repo_root / "caption-cli" / "caption.py"
-    env_file = repo_root / ".env"
+    _ensure_repo_imports(repo_root)
+    from netdocs.env import load_dotenv_file
 
-    if not caption_entry.exists():
-        print(f"caption entrypoint not found: {caption_entry}", file=sys.stderr)
+    caption_bin = _caption_bin_for_repo(repo_root)
+    env_file = _env_file_from_argv(argv, repo_root)
+    load_dotenv_file(env_file, override=True)
+
+    if not caption_bin.exists():
+        print(f"caption binary not found at {caption_bin}", file=sys.stderr)
+        print("Run 'uv sync' at the repo root to install caption-cli into .venv.", file=sys.stderr)
         return 1
 
     caption_args = list(argv)
@@ -109,17 +126,10 @@ def main(argv: list[str]) -> int:
     command_name, command_index = _resolve_command(caption_args)
 
     cmd = [
-        str(_python_bin_for_repo(repo_root)),
-        str(caption_entry),
+        str(caption_bin),
         *caption_args,
     ]
     child_env = os.environ.copy()
-    # Ensure caption-cli package imports work when launched from outside caption-cli/.
-    current_pythonpath = child_env.get("PYTHONPATH", "")
-    caption_module_path = str((repo_root / "caption-cli").resolve())
-    child_env["PYTHONPATH"] = (
-        caption_module_path if not current_pythonpath else f"{caption_module_path}:{current_pythonpath}"
-    )
     if command_name in TOKEN_HEAVY_COMMANDS:
         completed = subprocess.run(
             cmd,

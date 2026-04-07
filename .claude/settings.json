@@ -4,7 +4,8 @@
     "allow": [
       "Bash(uv run markitdown:*)",
       "Bash(npm view:*)",
-      "Bash(node superdoc-redline.mjs:*)"
+      "Bash(.claude/skills/redline/scripts/run_redline.sh:*)",
+      "Bash(.venv/bin/adeu:*)"
     ]
   },
   "hooks": {

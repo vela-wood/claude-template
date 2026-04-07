@@ -5,9 +5,10 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from dotenv import load_dotenv
 
-load_dotenv()
+from netdocs.env import load_repo_dotenv
+
+load_repo_dotenv(__file__)
 
 ARTIFACT_URL = os.environ.get("ARTIFACT_URL")
 ARTIFACT_API_TOKEN = os.environ.get("ARTIFACT_API_TOKEN")

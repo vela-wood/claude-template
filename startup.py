@@ -8,23 +8,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import tiktoken
-from dotenv import load_dotenv
 
-load_dotenv()
+from netdocs.env import load_repo_dotenv
 
-SUPERDOC = (
-    Path(__file__).resolve().parent
-    / ".claude"
-    / "skills"
-    / "superdoc-redlines"
-    / "superdoc-redline.mjs"
-)
+load_repo_dotenv(__file__)
 
 HASH_INDEX_FILENAME = ".hash_index.csv"
 TOKEN_INDEX_FILENAME = ".token_index.csv"
 CAPTION_OUTPUT_DIRNAME = "caption_cache"
 DOCX_CONVERTER_MARKITDOWN = "markitdown"
-DOCX_CONVERTER_SUPERDOC = "superdoc-redlines"
 DEFAULT_DOCX_CONVERTER = DOCX_CONVERTER_MARKITDOWN
 EMAIL_SUFFIXES = {
     ".eml",
@@ -70,8 +62,7 @@ def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -
     if suffix in MARKITDOWN_MD_SUFFIXES or suffix in NATIVE_EMAIL_SUFFIXES:
         return source.parent / f"{source.name}.md"
     if suffix == ".docx":
-        suffix = "md" if docx_converter == DOCX_CONVERTER_MARKITDOWN else "json"
-        return source.parent / f"{source.name}.{suffix}"
+        return source.parent / f"{source.name}.md"
     raise ValueError(f"Unsupported source type: {source}")
 
 
@@ -165,17 +156,6 @@ def _convert_one_email(source: Path, md_path: Path) -> None:
     lines.append(body if body else "(no text content)")
     md_path.write_text("\n".join(lines), encoding="utf-8")
 
-
-def _convert_one_docx_superdoc(docx: Path, json_path: Path) -> None:
-    result = subprocess.run(
-        ["node", str(SUPERDOC), "read", "--input", str(docx), "--no-metadata"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    json_path.write_text(result.stdout)
-
-
 def convert_files(
     root: Path,
     sources: list[Path],
@@ -208,10 +188,7 @@ def convert_files(
         elif suffix in MARKITDOWN_MD_SUFFIXES:
             _convert_one_markitdown(src, out)
         elif suffix == ".docx":
-            if docx_converter == DOCX_CONVERTER_MARKITDOWN:
-                _convert_one_markitdown(src, out)
-            else:
-                _convert_one_docx_superdoc(src, out)
+            _convert_one_markitdown(src, out)
         return rel
 
     with ThreadPoolExecutor() as pool:
@@ -278,12 +255,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert supported documents/email files and maintain hash/token indexes."
     )
-    parser.add_argument(
-        "--docx_converter",
-        choices=[DOCX_CONVERTER_MARKITDOWN, DOCX_CONVERTER_SUPERDOC],
-        default=DEFAULT_DOCX_CONVERTER,
-        help="Tool used for DOCX conversion (default: markitdown).",
-    )
     return parser.parse_args()
 
 
@@ -343,14 +314,14 @@ def main():
                 print(f"\tERROR hashing {rel}: {exc}")
 
     # 4. Convert files with changed/new hashes
-    converted_rels = convert_files(root, sources, hashes, hash_index, args.docx_converter)
+    converted_rels = convert_files(root, sources, hashes, hash_index, DEFAULT_DOCX_CONVERTER)
 
     # 5. Update hash index for all current files
     for rel, h in hashes.items():
         hash_index[rel] = h
 
     # 6. Count tokens for new/changed converted files
-    index_tokens(root, hashes, token_index, converted_rels, args.docx_converter)
+    index_tokens(root, hashes, token_index, converted_rels, DEFAULT_DOCX_CONVERTER)
 
     # 7. Prune stale entries
     stale_hash = [rel for rel in hash_index if rel not in hashes]
@@ -360,7 +331,7 @@ def main():
     valid_converted = set()
     for rel in hashes:
         try:
-            conv_rel = str(converted_path(root / rel, args.docx_converter).relative_to(root))
+            conv_rel = str(converted_path(root / rel, DEFAULT_DOCX_CONVERTER).relative_to(root))
             valid_converted.add(conv_rel)
         except ValueError:
             pass

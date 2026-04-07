@@ -7,7 +7,7 @@ description: Operates the Caption CLI. Use when users ask about transcripts of t
 
 ## Overview
 
-This skill runs the local `caption-cli` commands for Caption workspace and transcript workflows.
+This skill runs the installed `caption` CLI from the repo-local `.venv` for Caption workspace and transcript workflows.
 
 Use this skill for:
 - Search (`search`)
@@ -38,7 +38,7 @@ Always run commands via:
 
 This launcher resolves paths dynamically from its own location and enforces:
 - Python interpreter: `<repo-root>/.venv/bin/python` when present (fallback: current Python)
-- Caption entrypoint: `<repo-root>/caption-cli/caption.py`
+- Caption binary: `<repo-root>/.venv/bin/caption`
 - Default env-file: `<repo-root>/.env` (unless overridden with `--env-file`)
 
 For token-heavy commands (`list_projects`, `list_folders`, `dl_transcript`), the wrapper:
@@ -97,6 +97,7 @@ head -n 40 caption_cache/<file>
 
 ## Common Failures
 
+- Missing `.venv/bin/caption`: run `uv sync` at the repo root.
 - Missing `CAPTION_API_URL`: all commands fail.
 - Missing `CAPTION_TOKEN`: authenticated API calls fail.
 - Missing `CAPTION_MEILI_URL`: `token` and `search` fail.
