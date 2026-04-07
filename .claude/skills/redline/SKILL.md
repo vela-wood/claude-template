@@ -1,6 +1,6 @@
 ---
 name: redline
-description: Use this skill for reviewing, editing, or negotiating existing Word documents (.docx) where Track Changes or precise redlining is required.
+description: Use this skill for editing .docx files or comparing two .docx files
 ---
 
 # Redline Skill
@@ -8,9 +8,7 @@ description: Use this skill for reviewing, editing, or negotiating existing Word
 ## Overview
 
 This skill runs Adeu from the repo-local environment. Use it when you need to:
-- read a `.docx` as markdown for analysis
 - compare two `.docx` versions
-- preview an edit batch
 - apply redlines/comments back into a `.docx`
 
 Do not use this skill to create a new blank Word document from scratch.
