@@ -22,6 +22,12 @@ def _repo_root_from_script() -> Path:
     return script_path.parents[4]
 
 
+def _ensure_repo_imports(repo_root: Path) -> None:
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+
+
 def _caption_bin_for_repo(repo_root: Path) -> Path:
     return repo_root / ".venv" / "bin" / "caption"
 
@@ -31,6 +37,15 @@ def _has_env_override(argv: list[str]) -> bool:
         if arg == "--env-file" or arg.startswith("--env-file="):
             return True
     return False
+
+
+def _env_file_from_argv(argv: list[str], repo_root: Path) -> Path:
+    for index, arg in enumerate(argv):
+        if arg == "--env-file" and index + 1 < len(argv):
+            return Path(argv[index + 1]).expanduser()
+        if arg.startswith("--env-file="):
+            return Path(arg.split("=", 1)[1]).expanduser()
+    return repo_root / ".env"
 
 
 def _resolve_command(argv: list[str]) -> tuple[str | None, int | None]:
@@ -93,8 +108,12 @@ def _output_path_for_command(
 
 def main(argv: list[str]) -> int:
     repo_root = _repo_root_from_script()
+    _ensure_repo_imports(repo_root)
+    from netdocs.env import load_dotenv_file
+
     caption_bin = _caption_bin_for_repo(repo_root)
-    env_file = repo_root / ".env"
+    env_file = _env_file_from_argv(argv, repo_root)
+    load_dotenv_file(env_file, override=True)
 
     if not caption_bin.exists():
         print(f"caption binary not found at {caption_bin}", file=sys.stderr)

@@ -2,9 +2,9 @@
 import argparse
 import sys
 
-from dotenv import load_dotenv
+from netdocs.env import load_repo_dotenv
 
-load_dotenv()
+load_repo_dotenv(__file__)
 
 
 def main():

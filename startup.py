@@ -8,9 +8,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import tiktoken
-from dotenv import load_dotenv
 
-load_dotenv()
+from netdocs.env import load_repo_dotenv
+
+load_repo_dotenv(__file__)
 
 HASH_INDEX_FILENAME = ".hash_index.csv"
 TOKEN_INDEX_FILENAME = ".token_index.csv"
