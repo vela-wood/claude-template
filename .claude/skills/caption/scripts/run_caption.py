@@ -22,11 +22,8 @@ def _repo_root_from_script() -> Path:
     return script_path.parents[4]
 
 
-def _python_bin_for_repo(repo_root: Path) -> Path:
-    repo_venv_python = repo_root / ".venv" / "bin" / "python"
-    if repo_venv_python.exists():
-        return repo_venv_python
-    return Path(sys.executable)
+def _caption_bin_for_repo(repo_root: Path) -> Path:
+    return repo_root / ".venv" / "bin" / "caption"
 
 
 def _has_env_override(argv: list[str]) -> bool:
@@ -96,11 +93,12 @@ def _output_path_for_command(
 
 def main(argv: list[str]) -> int:
     repo_root = _repo_root_from_script()
-    caption_entry = repo_root / "caption-cli" / "caption.py"
+    caption_bin = _caption_bin_for_repo(repo_root)
     env_file = repo_root / ".env"
 
-    if not caption_entry.exists():
-        print(f"caption entrypoint not found: {caption_entry}", file=sys.stderr)
+    if not caption_bin.exists():
+        print(f"caption binary not found at {caption_bin}", file=sys.stderr)
+        print("Run 'uv sync' at the repo root to install caption-cli into .venv.", file=sys.stderr)
         return 1
 
     caption_args = list(argv)
@@ -109,17 +107,10 @@ def main(argv: list[str]) -> int:
     command_name, command_index = _resolve_command(caption_args)
 
     cmd = [
-        str(_python_bin_for_repo(repo_root)),
-        str(caption_entry),
+        str(caption_bin),
         *caption_args,
     ]
     child_env = os.environ.copy()
-    # Ensure caption-cli package imports work when launched from outside caption-cli/.
-    current_pythonpath = child_env.get("PYTHONPATH", "")
-    caption_module_path = str((repo_root / "caption-cli").resolve())
-    child_env["PYTHONPATH"] = (
-        caption_module_path if not current_pythonpath else f"{caption_module_path}:{current_pythonpath}"
-    )
     if command_name in TOKEN_HEAVY_COMMANDS:
         completed = subprocess.run(
             cmd,
