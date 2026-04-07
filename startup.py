@@ -282,14 +282,19 @@ def main():
     hash_index = load_hash_index(root)
     token_index = load_token_index(root)
 
-    # 2. Discover source files (skip dot-prefixed directories)
-    def _visible(p: Path) -> bool:
-        return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
+    # 2. Discover source files (skip dot-prefixed directories and temp files)
+    def _eligible_source(p: Path) -> bool:
+        rel_parts = p.relative_to(root).parts
+        return (
+            not any(part.startswith(".") for part in rel_parts[:-1])
+            and not p.name.startswith("~")
+            and p.suffix.lower() in SOURCE_SUFFIXES
+        )
 
     sources = sorted(
         p
         for p in root.rglob("*")
-        if p.is_file() and _visible(p) and p.suffix.lower() in SOURCE_SUFFIXES
+        if p.is_file() and _eligible_source(p)
     )
 
     if not sources:
