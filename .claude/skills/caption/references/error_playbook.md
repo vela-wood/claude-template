@@ -34,7 +34,7 @@ Symptoms:
 Recovery:
 1. Run `token` to refresh cache.
 2. Retry search.
-3. If persistent, verify `CAPTION_TOKEN` validity and API permissions.
+3. If persistent, verify `CLERK_API_KEY` validity and API permissions.
 
 ## Workspace Lookup Failures
 

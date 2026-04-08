@@ -22,7 +22,7 @@ The CLI reads env vars from the repo root `.env` by default:
 
 Required keys:
 - `CAPTION_API_URL`
-- `CAPTION_TOKEN`
+- `CLERK_API_KEY`
 - `CAPTION_MEILI_URL` (required for `token` and `search`)
 
 Optional key:
@@ -99,7 +99,7 @@ head -n 40 caption_cache/<file>
 
 - Missing `.venv/bin/caption`: run `uv sync` at the repo root.
 - Missing `CAPTION_API_URL`: all commands fail.
-- Missing `CAPTION_TOKEN`: authenticated API calls fail.
+- Missing `CLERK_API_KEY`: authenticated API calls fail.
 - Missing `CAPTION_MEILI_URL`: `token` and `search` fail.
 - Invalid Meili token: search retries once after `/search/token` refresh.
 - No-op edit calls: rejected by `edit_project` / `edit_folder` validation.

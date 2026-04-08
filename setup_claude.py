@@ -4,10 +4,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 import httpx
-from dotenv import dotenv_values, set_key
+from dotenv.parser import parse_stream
 
 SETUP_PAGE_URL = "https://dev.caption.fyi/claude_setup"
 SETUP_API_URL = "https://chat.caption.fyi/claude_setup"
@@ -24,13 +24,39 @@ class BuildResult:
 
 @dataclass(frozen=True)
 class WriteResult:
-    added_keys: tuple[str, ...]
-    updated_keys: tuple[str, ...]
-    preserved_conflicts: tuple[str, ...]
+    appended_new_keys: tuple[str, ...]
+    appended_conflicting_keys: tuple[str, ...]
+    skipped_existing_keys: tuple[str, ...]
 
 
 class SetupError(Exception):
     pass
+
+
+def drop_nulls(value: object) -> object:
+    if isinstance(value, Mapping):
+        cleaned_mapping = {
+            key: drop_nulls(child_value)
+            for key, child_value in value.items()
+            if child_value is not None
+        }
+        if (
+            any(field in cleaned_mapping for field in NAMED_CREDENTIAL_KEY_FIELDS)
+            and not any(field in cleaned_mapping for field in NAMED_CREDENTIAL_VALUE_FIELDS)
+        ):
+            return None
+        return cleaned_mapping
+    if isinstance(value, list):
+        cleaned_items: list[object] = []
+        for item in value:
+            if item is None:
+                continue
+            cleaned_item = drop_nulls(item)
+            if cleaned_item is None:
+                continue
+            cleaned_items.append(cleaned_item)
+        return cleaned_items
+    return value
 
 
 def normalize_env_key(raw_key: str) -> str:
@@ -171,8 +197,8 @@ def collect_organization_credentials(
     raise SetupError(f"Unsupported credentials payload at {source}.")
 
 
-def build_env_values(payload: Mapping[str, object], auth_token: str) -> BuildResult:
-    env_values: dict[str, str] = {"CAPTION_TOKEN": auth_token}
+def build_env_values(payload: Mapping[str, object]) -> BuildResult:
+    env_values: dict[str, str] = {}
     skipped_null_keys: set[str] = set()
 
     organizations = payload.get("organizations", [])
@@ -213,9 +239,6 @@ def fetch_setup_payload(auth_token: str) -> Mapping[str, object]:
     with httpx.Client(timeout=15.0) as client:
         response = client.get(SETUP_API_URL, headers=headers)
 
-    print(f"HTTP {response.status_code}")
-    print(response.text)
-
     if response.status_code >= 400:
         detail = response.text.strip() or response.reason_phrase
         raise SetupError(f"Setup request failed ({response.status_code}): {detail}")
@@ -227,16 +250,11 @@ def fetch_setup_payload(auth_token: str) -> Mapping[str, object]:
 
     if not isinstance(payload, dict):
         raise SetupError("Setup request returned non-object JSON.")
-    return payload
 
-
-def detect_conflicts(existing_values: Mapping[str, str | None], new_values: Mapping[str, str]) -> tuple[str, ...]:
-    conflicts = [
-        key
-        for key, new_value in new_values.items()
-        if key in existing_values and existing_values[key] not in {None, new_value}
-    ]
-    return tuple(sorted(conflicts))
+    cleaned_payload = drop_nulls(payload)
+    if not isinstance(cleaned_payload, dict):
+        raise SetupError("Setup request returned invalid object JSON.")
+    return cleaned_payload
 
 
 def prompt_for_token() -> str:
@@ -247,52 +265,62 @@ def prompt_for_token() -> str:
     return token
 
 
-def prompt_for_conflict_mode(conflicts: tuple[str, ...]) -> str:
-    print("Conflicting keys already exist in .env:")
-    for key in conflicts:
-        print(f"  - {key}")
+def read_existing_env_values(env_file: Path) -> dict[str, list[str]]:
+    if not env_file.exists():
+        return {}
 
-    while True:
-        choice = input("Type 'overwrite' to replace them or 'append' to keep existing values: ").strip().lower()
-        if choice in {"overwrite", "o"}:
-            return "overwrite"
-        if choice in {"append", "a"}:
-            return "append"
-        print("Invalid choice. Type 'overwrite' or 'append'.")
+    values_by_key: dict[str, list[str]] = {}
+    with env_file.open(encoding="utf-8") as source:
+        for binding in parse_stream(source):
+            if binding.key is None or binding.value is None:
+                continue
+            values_by_key.setdefault(binding.key, []).append(binding.value)
+    return values_by_key
 
 
-def write_env_file(env_file: Path, new_values: Mapping[str, str], *, mode: str) -> WriteResult:
+def render_env_line(key: str, value: str) -> str:
+    quote = not value.isalnum()
+    rendered_value = "'" + value.replace("'", "\\'") + "'" if quote else value
+    return f"{key}={rendered_value}\n"
+
+
+def write_env_file(env_file: Path, new_values: Mapping[str, str]) -> WriteResult:
     env_file.parent.mkdir(parents=True, exist_ok=True)
     env_file.touch(exist_ok=True)
 
-    existing_values = dotenv_values(env_file)
-    added_keys: list[str] = []
-    updated_keys: list[str] = []
-    preserved_conflicts: list[str] = []
+    existing_values = read_existing_env_values(env_file)
+    appended_new_keys: list[str] = []
+    appended_conflicting_keys: list[str] = []
+    skipped_existing_keys: list[str] = []
+    lines_to_append: list[str] = []
 
     for key in sorted(new_values):
         new_value = new_values[key]
-        current_value = existing_values.get(key)
+        current_values = existing_values.get(key, [])
 
-        if current_value is None:
-            set_key(env_file, key, new_value, quote_mode="auto")
-            added_keys.append(key)
+        if not current_values:
+            lines_to_append.append(render_env_line(key, new_value))
+            appended_new_keys.append(key)
             continue
 
-        if current_value == new_value:
+        if new_value in current_values:
+            skipped_existing_keys.append(key)
             continue
 
-        if mode == "overwrite":
-            set_key(env_file, key, new_value, quote_mode="auto")
-            updated_keys.append(key)
-            continue
+        lines_to_append.append(render_env_line(key, new_value))
+        appended_conflicting_keys.append(key)
 
-        preserved_conflicts.append(key)
+    if lines_to_append:
+        needs_newline = env_file.stat().st_size > 0 and not env_file.read_text(encoding="utf-8").endswith("\n")
+        with env_file.open("a", encoding="utf-8") as destination:
+            if needs_newline:
+                destination.write("\n")
+            destination.writelines(lines_to_append)
 
     return WriteResult(
-        added_keys=tuple(added_keys),
-        updated_keys=tuple(updated_keys),
-        preserved_conflicts=tuple(preserved_conflicts),
+        appended_new_keys=tuple(appended_new_keys),
+        appended_conflicting_keys=tuple(appended_conflicting_keys),
+        skipped_existing_keys=tuple(skipped_existing_keys),
     )
 
 
@@ -302,13 +330,8 @@ def main() -> int:
     try:
         auth_token = prompt_for_token()
         payload = fetch_setup_payload(auth_token)
-        build_result = build_env_values(payload, auth_token)
-
-        existing_values = dotenv_values(env_file) if env_file.exists() else {}
-        conflicts = detect_conflicts(existing_values, build_result.env_values)
-        mode = prompt_for_conflict_mode(conflicts) if conflicts else "overwrite"
-
-        write_result = write_env_file(env_file, build_result.env_values, mode=mode)
+        build_result = build_env_values(payload)
+        write_result = write_env_file(env_file, build_result.env_values)
     except SetupError as exc:
         print(f"Error: {exc}")
         return 1
@@ -317,17 +340,17 @@ def main() -> int:
         return 1
 
     print(f"Wrote environment to {env_file}")
-    if write_result.added_keys:
-        print("Added keys:")
-        for key in write_result.added_keys:
+    if write_result.appended_new_keys:
+        print("Appended new keys:")
+        for key in write_result.appended_new_keys:
             print(f"  - {key}")
-    if write_result.updated_keys:
-        print("Updated keys:")
-        for key in write_result.updated_keys:
+    if write_result.appended_conflicting_keys:
+        print("Appended additional values for existing keys:")
+        for key in write_result.appended_conflicting_keys:
             print(f"  - {key}")
-    if write_result.preserved_conflicts:
-        print("Kept existing values for:")
-        for key in write_result.preserved_conflicts:
+    if write_result.skipped_existing_keys:
+        print("Skipped keys already present with the same value:")
+        for key in write_result.skipped_existing_keys:
             print(f"  - {key}")
     if build_result.skipped_null_keys:
         print("Skipped null values for:")
