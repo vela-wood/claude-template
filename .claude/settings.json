@@ -3,9 +3,12 @@
   "permissions": {
     "allow": [
       "Bash(uv run markitdown:*)",
-      "Bash(npm view:*)",
+      "Bash(uv run startup.py:*)",
       "Bash(.claude/skills/redline/scripts/run_redline.sh:*)",
-      "Bash(.venv/bin/adeu:*)"
+      "Bash(.venv/bin/adeu:*)",
+      "Bash(.venv/bin/caption:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)"
     ]
   },
   "hooks": {
