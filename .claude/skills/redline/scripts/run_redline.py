@@ -22,13 +22,22 @@ def _ensure_repo_imports(repo_root: Path) -> None:
 def main(argv: list[str]) -> int:
     repo_root = _repo_root_from_script()
     _ensure_repo_imports(repo_root)
-    from netdocs.env import load_dotenv_file
+    # Import directly from the module file to avoid triggering netdocs/__init__.py
+    # which has heavy dependencies (textual, asyncpg, etc.)
+    import importlib.util as _ilu
+    _env_spec = _ilu.spec_from_file_location("netdocs.env", repo_root / "netdocs" / "env.py")
+    _env_mod = _ilu.module_from_spec(_env_spec)
+    _env_spec.loader.exec_module(_env_mod)
+    load_dotenv_file = _env_mod.load_dotenv_file
 
     load_dotenv_file(repo_root / ".env", override=True)
 
     adeu_bin = repo_root / ".venv" / "bin" / "adeu"
     if not adeu_bin.exists():
-        print(f"adeu binary not found at {adeu_bin}", file=sys.stderr)
+        # Windows venv uses Scripts/ and .exe extension
+        adeu_bin = repo_root / ".venv" / "Scripts" / "adeu.exe"
+    if not adeu_bin.exists():
+        print(f"adeu binary not found in .venv/bin or .venv/Scripts", file=sys.stderr)
         print("Run 'uv sync' at the repo root to install Adeu into .venv.", file=sys.stderr)
         return 1
 
