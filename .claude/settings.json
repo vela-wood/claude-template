@@ -5,6 +5,7 @@
       "Bash(uv run markitdown:*)",
       "Bash(uv run startup.py:*)",
       "Bash(.claude/skills/redline/scripts/run_redline.sh:*)",
+      "Bash(.claude/skills/redline/scripts/run_caption.sh:*)",
       "Bash(.venv/bin/adeu:*)",
       "Bash(.venv/bin/caption:*)",
       "Bash(grep:*)",
