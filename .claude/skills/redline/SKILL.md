@@ -16,6 +16,8 @@ Do not use this skill to create a new blank Word document from scratch.
 ## Required Environment
 
 - Root repo dependencies must be installed into `.venv`.
+- Run `uv sync` at the repo root for standard setup.
+- `adeu` is declared in the root `redline` dependency group, and that group is enabled by default.
 - If `.venv/bin/adeu` is missing, run `uv sync` at the repo root.
 
 ## Command Runner

@@ -239,9 +239,7 @@ name = "claude-template"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "adeu" },
     { name = "asyncpg" },
-    { name = "caption-cli" },
     { name = "httpx" },
     { name = "markitdown", extra = ["docx", "outlook", "pdf", "pptx"] },
     { name = "meilisearch" },
@@ -258,11 +256,17 @@ dependencies = [
     { name = "tiktoken" },
 ]
 
+[package.dev-dependencies]
+caption = [
+    { name = "caption-cli" },
+]
+redline = [
+    { name = "adeu" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "adeu", git = "https://github.com/dealfluence/adeu.git" },
     { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "caption-cli", git = "https://github.com/sec-chair/caption-cli.git" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "markitdown", extras = ["pdf", "docx", "pptx", "outlook"] },
     { name = "meilisearch", specifier = ">=0.40.0" },
@@ -278,6 +282,10 @@ requires-dist = [
     { name = "textual-fspicker", specifier = ">=0.6.0" },
     { name = "tiktoken", specifier = ">=0.8.0" },
 ]
+
+[package.metadata.requires-dev]
+caption = [{ name = "caption-cli", git = "https://github.com/sec-chair/caption-cli.git" }]
+redline = [{ name = "adeu", git = "https://github.com/dealfluence/adeu.git" }]
 
 [[package]]
 name = "click"

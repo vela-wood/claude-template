@@ -8,6 +8,10 @@ Use:
 ./.venv/bin/python .claude/skills/caption/scripts/run_caption.py <global-flags> <command> [command-flags]
 ```
 
+Standard install path:
+- Run `uv sync` at the repo root.
+- The root `caption` dependency group is enabled by default, so the shared repo `.venv` should contain `.venv/bin/caption`.
+
 Global flags:
 - `--cache-path <path>`
 - `--output json|table|md`

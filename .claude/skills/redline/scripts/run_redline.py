@@ -29,7 +29,10 @@ def main(argv: list[str]) -> int:
     adeu_bin = repo_root / ".venv" / "bin" / "adeu"
     if not adeu_bin.exists():
         print(f"adeu binary not found at {adeu_bin}", file=sys.stderr)
-        print("Run 'uv sync' at the repo root to install Adeu into .venv.", file=sys.stderr)
+        print(
+            "Run 'uv sync' at the repo root. The default 'redline' group installs Adeu into the shared .venv.",
+            file=sys.stderr,
+        )
         return 1
 
     cmd = [str(adeu_bin), *argv]

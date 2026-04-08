@@ -22,7 +22,7 @@ Symptoms:
 - `caption binary not found at <repo-root>/.venv/bin/caption`
 
 Recovery:
-1. Run `uv sync` at the repo root.
+1. Run `uv sync` at the repo root. The default `caption` group should install `caption` into the shared repo `.venv`.
 2. Re-run the wrapper command after the root `.venv` has been refreshed.
 
 ## Token/Auth Failures on Search
