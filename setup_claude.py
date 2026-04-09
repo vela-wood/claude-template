@@ -258,7 +258,7 @@ def fetch_setup_payload(auth_token: str) -> Mapping[str, object]:
 
 
 def prompt_for_token() -> str:
-    print(f"Open {SETUP_PAGE_URL} in your browser (shift/cmd + click) and paste in the authentication token")
+    print(f"Open {SETUP_PAGE_URL} in your browser (ctrl + click) and paste in the authentication token")
     token = input("Authentication token: ").strip()
     if not token:
         raise SetupError("No authentication token provided.")

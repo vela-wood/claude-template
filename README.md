@@ -1,37 +1,92 @@
 # Claude Code Legal Template
 
-This template contains (1) an AGENTS.md file, (2) Python scripts for file conversion and workflow support, and (3) Claude skills wired to the repo-local environment.
+A workspace for legal professionals to use Claude Code for document review, drafting, redlining, and transcript management — all from the command line.
 
-## Current repo layout
+## What this does
 
-1. `AGENTS.md`: primary behavior spec (startup procedure, tooling rules, journaling protocol).
-2. `startup.py`: converts `.pdf/.docx/.eml/.msg` inputs to markdown, updates `.hash_index.csv` and `.token_index.csv`, and surfaces optional features.
-3. `nd.py` + `netdocs/`: NetDocs CLI/TUI integration.
-4. `tools/remove_artifacts.py`: cleans PDF markdown artifacts via API when configured.
-5. `.claude/skills/redline/`: Adeu-backed DOCX redlining skill using the root repo environment.
-6. `.claude/skills/caption/`: Caption CLI skill using the same repo environment.
+When you open this folder in Claude Code, Claude automatically:
 
-## Prerequisites
+- Reads and understands your matter files (PDFs, Word documents, emails).
+- Follows legal-specific instructions for precision, citation, and journaling.
+- Gives you access to built-in skills (see below) for common legal workflows.
 
-1. `uv` installed.
-2. Python 3.14 available for the root repo environment.
-3. Run `uv sync` at the repo root. The repo uses one `.venv`, and the default dependency groups install both skill CLIs (`caption-cli` and `adeu`) into that same environment.
-4. Optional environment variables for integrations:
-   - NetDocs: `MATTERS_DB`, `ND_API_KEY`, `NDHELPER_URL`
-   - Artifact cleaning: `ARTIFACT_API_TOKEN`, `ARTIFACT_URL`
+## Setup
 
-## Typical use
+### 1. Install prerequisites
 
-1. Put matter files in this workspace.
-2. Run `uv run startup.py` to ensure indexing/conversion works.
-3. Run `uv sync` after pulling dependency changes.
-4. Launch Claude Code.
-5. For DOCX editing/redlines, use `/redline`.
-6. For Caption transcript/project workflows, use `/caption`.
+You need two things installed on your computer:
 
-## Notes
+- **Git** — [git-scm.com/downloads](https://git-scm.com/downloads)
+- **uv** (Python package manager) — [docs.astral.sh/uv](https://docs.astral.sh/uv/)
 
-- NetDocs stays in the base dependency set because it is first-class repo functionality.
-- `caption-cli` and `adeu` live in root dependency groups, but those groups are enabled by default so plain `uv sync` is still sufficient for standard setup.
-- Advanced users can omit the skill CLIs with `uv sync --no-group caption --no-group redline` or `uv sync --no-default-groups`.
-- Adeu is installed from `https://github.com/dealfluence/adeu.git`; this repo no longer vendors the old SuperDoc redlining package.
+### 2. Clone the repository
+
+Open your terminal and run:
+
+```
+git clone https://github.com/vela-wood/claude-template.git
+cd claude-template
+```
+
+### 3. Install dependencies
+
+```
+uv sync
+```
+
+This installs Python and all required packages into a local environment. Nothing is installed globally on your system.
+
+### 4. Connect your accounts
+
+```
+uv run setup_claude.py
+```
+
+This will prompt you to authenticate and then save the necessary credentials to a local `.env` file. You only need to do this once.
+
+### 5. Launch Claude Code
+
+Open the `claude-template` folder in Claude Code and start working.
+
+## Skills
+
+Skills are special commands you can type inside Claude Code to trigger specific workflows. Type the command and Claude takes it from there.
+
+### `/redline` — Edit and compare Word documents
+
+Use this when you need to:
+
+- **Compare two versions** of a `.docx` file and see what changed.
+- **Apply edits** to a Word document with tracked changes.
+- **Extract text** from a `.docx` for review.
+
+Claude generates a redlined Word document with native Track Changes markup, just like you would see in Microsoft Word.
+
+### `/caption` — Manage transcripts and recordings
+
+Use this when you need to:
+
+- **Search** across your transcripts for specific terms or topics.
+- **Download** a transcript from a meeting or recording.
+- **Organize** projects and folders in your Caption workspace.
+
+Requires Caption account credentials (configured during setup).
+
+### `/vs` — Version Story document management
+
+Use this when you need to:
+
+- **Track versions** of documents with full history.
+- **Compare changes** between document versions.
+- **Collaborate** on documents with branching and merging.
+
+Works with `.docx` and `.pdf` files. Requires a Version Story account.
+
+## Day-to-day usage
+
+1. **Copy your matter files** (PDFs, Word docs, emails) into this folder or a subfolder.
+2. **Open the folder in Claude Code.**
+3. **Ask Claude what you need** — summarize a contract, compare two drafts, find a clause, draft a response.
+4. **Use skills** (`/redline`, `/caption`, `/vs`) for specialized workflows.
+
+Claude automatically converts your files to a readable format, keeps an index of what's in the folder, and journals what it did so you have a record.
