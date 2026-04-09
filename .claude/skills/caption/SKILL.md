@@ -28,6 +28,10 @@ Required keys:
 Optional key:
 - `CAPTION_MEILI_CACHE`
 
+Install model:
+- Run `uv sync` at the repo root for standard setup.
+- `caption-cli` is declared in the root `caption` dependency group, and that group is enabled by default.
+
 ## Command Runner
 
 Always run commands via:
@@ -97,7 +101,7 @@ head -n 40 caption_cache/<file>
 
 ## Common Failures
 
-- Missing `.venv/bin/caption`: run `uv sync` at the repo root.
+- Missing `.venv/bin/caption`: run `uv sync` at the repo root. The default `caption` group should install it into the shared repo `.venv`.
 - Missing `CAPTION_API_URL`: all commands fail.
 - Missing `CLERK_API_KEY`: authenticated API calls fail.
 - Missing `CAPTION_MEILI_URL`: `token` and `search` fail.

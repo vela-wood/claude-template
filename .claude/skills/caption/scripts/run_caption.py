@@ -117,7 +117,10 @@ def main(argv: list[str]) -> int:
 
     if not caption_bin.exists():
         print(f"caption binary not found at {caption_bin}", file=sys.stderr)
-        print("Run 'uv sync' at the repo root to install caption-cli into .venv.", file=sys.stderr)
+        print(
+            "Run 'uv sync' at the repo root. The default 'caption' group installs caption-cli into the shared .venv.",
+            file=sys.stderr,
+        )
         return 1
 
     caption_args = list(argv)

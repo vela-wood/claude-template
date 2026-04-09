@@ -37,8 +37,11 @@ def main(argv: list[str]) -> int:
         # Windows venv uses Scripts/ and .exe extension
         adeu_bin = repo_root / ".venv" / "Scripts" / "adeu.exe"
     if not adeu_bin.exists():
-        print(f"adeu binary not found in .venv/bin or .venv/Scripts", file=sys.stderr)
-        print("Run 'uv sync' at the repo root to install Adeu into .venv.", file=sys.stderr)
+        print("adeu binary not found in .venv/bin or .venv/Scripts", file=sys.stderr)
+        print(
+            "Run 'uv sync' at the repo root. The default 'redline' group installs Adeu into the shared .venv.",
+            file=sys.stderr,
+        )
         return 1
 
     cmd = [str(adeu_bin), *argv]

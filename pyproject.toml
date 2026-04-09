@@ -5,9 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "adeu @ git+https://github.com/dealfluence/adeu.git",
     "asyncpg>=0.31.0",
-    "caption-cli @ git+https://github.com/sec-chair/caption-cli.git",
     "httpx>=0.28.1",
     "markitdown[pdf, docx, pptx, outlook]",
     "meilisearch>=0.40.0",
@@ -27,8 +25,17 @@ dependencies = [
 [project.scripts]
 netdocs = "netdocs.__main__:main"
 
+[dependency-groups]
+caption = [
+    "caption-cli @ git+https://github.com/sec-chair/caption-cli.git",
+]
+redline = [
+    "adeu @ git+https://github.com/dealfluence/adeu.git",
+]
+
 [tool.uv]
 package = true
+default-groups = ["caption", "redline"]
 
 [tool.setuptools.packages.find]
 include = ["netdocs*"]
