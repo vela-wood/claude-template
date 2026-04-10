@@ -1,37 +1,76 @@
-# Claude Code Legal Template
+# claude-template
 
-This template contains (1) an AGENTS.md file, (2) Python scripts for file conversion and workflow support, and (3) Claude skills wired to the repo-local environment.
+Template workspace for document-heavy legal work with Claude/Codex. It is set up to:
 
-## Current repo layout
+- optimize token usage by converting office documents into markdown
+- manipulate word documents in track changes via the /redline skill
+- connect to other important sources of context (currently, caption.fyi and netdocs)
+- don't forget to bring your own first party connectors via mcp
 
-1. `AGENTS.md`: primary behavior spec (startup procedure, tooling rules, journaling protocol).
-2. `startup.py`: converts `.pdf/.docx/.eml/.msg` inputs to markdown, updates `.hash_index.csv` and `.token_index.csv`, and surfaces optional features.
-3. `nd.py` + `netdocs/`: NetDocs CLI/TUI integration.
-4. `tools/remove_artifacts.py`: cleans PDF markdown artifacts via API when configured.
-5. `.claude/skills/redline/`: Adeu-backed DOCX redlining skill using the root repo environment.
-6. `.claude/skills/caption/`: Caption CLI skill using the same repo environment.
+## Non-Technical Setup
 
-## Prerequisites
+After you get GitHub access and clone the repo:
 
-1. `uv` installed.
-2. Python 3.14 available for the root repo environment.
-3. Run `uv sync` at the repo root. The repo uses one `.venv`, and the default dependency groups install both skill CLIs (`caption-cli` and `adeu`) into that same environment.
-4. Optional environment variables for integrations:
-   - NetDocs: `MATTERS_DB`, `ND_API_KEY`, `NDHELPER_URL`
-   - Artifact cleaning: `ARTIFACT_API_TOKEN`, `ARTIFACT_URL`
+1. Open Terminal and go into the repo:
 
-## Typical use
+```sh
+cd claude-template
+```
 
-1. Put matter files in this workspace.
-2. Run `uv run startup.py` to ensure indexing/conversion works.
-3. Run `uv sync` after pulling dependency changes.
-4. Launch Claude Code.
-5. For DOCX editing/redlines, use `/redline`.
-6. For Caption transcript/project workflows, use `/caption`.
+2. If you are using Windows, switch to the Windows version of the template:
 
-## Notes
+```sh
+git checkout windows
+```
 
-- NetDocs stays in the base dependency set because it is first-class repo functionality.
-- `caption-cli` and `adeu` live in root dependency groups, but those groups are enabled by default so plain `uv sync` is still sufficient for standard setup.
-- Advanced users can omit the skill CLIs with `uv sync --no-group caption --no-group redline` or `uv sync --no-default-groups`.
-- Adeu is installed from `https://github.com/dealfluence/adeu.git`; this repo no longer vendors the old SuperDoc redlining package.
+The default branch is set up for Mac.
+
+3. Install dependencies:
+
+```sh
+uv sync
+```
+
+4. Optionally set up the [Caption](https://dev.caption.fyi/) and NetDocs connectors:
+
+```sh
+uv run setup_claude.py
+```
+
+## Basic Usage
+
+Laumch claude and start asking questions, you control the context by referencing documents in the folder.
+
+## Available Skills
+
+This repo includes three local Claude skills under `.claude/skills/`:
+
+### `/caption`
+
+Use this for Caption transcript and workspace tasks, including:
+
+- searching transcripts
+- listing projects and folders
+- creating or editing Caption projects/folders
+- downloading transcript text
+
+### `/redline`
+
+Use this for Word document editing and comparisons:
+
+- compare two `.docx` files
+- preview structured edits
+- apply redlines/comments back into a `.docx`
+
+Important constraints:
+
+- this is the only approved way to edit Word documents in this repo
+- do not use it to create a brand-new blank Word file from scratch
+- keep output as a new redlined file unless you explicitly want the original overwritten
+
+## Requirements
+
+- `uv`
+- Python `3.13`
+
+Do not rely on bare `python` from the command line in this repo. Use `uv run ...`.
