@@ -19,3 +19,5 @@ wheels/
 *.msg
 *.doc
 *.json
+*.xlsx
+*.pptx

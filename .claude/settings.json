@@ -11,18 +11,5 @@
       "Bash(grep:*)",
       "Bash(find:*)"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "clawmoat scan"
-          }
-        ]
-      }
-    ]
   }
 }

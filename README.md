@@ -1,92 +1,76 @@
-# Claude Code Legal Template
+# claude-template
 
-A workspace for legal professionals to use Claude Code for document review, drafting, redlining, and transcript management — all from the command line.
+Template workspace for document-heavy legal work with Claude/Codex. It is set up to:
 
-## What this does
+- optimize token usage by converting office documents into markdown
+- manipulate word documents in track changes via the /redline skill
+- connect to other important sources of context (currently, caption.fyi and netdocs)
+- don't forget to bring your own first party connectors via mcp
 
-When you open this folder in Claude Code, Claude automatically:
+## Non-Technical Setup
 
-- Reads and understands your matter files (PDFs, Word documents, emails).
-- Follows legal-specific instructions for precision, citation, and journaling.
-- Gives you access to built-in skills (see below) for common legal workflows.
+After you get GitHub access and clone the repo:
 
-## Setup
+1. Open Terminal and go into the repo:
 
-### 1. Install prerequisites
-
-You need two things installed on your computer:
-
-- **Git** — [git-scm.com/downloads](https://git-scm.com/downloads)
-- **uv** (Python package manager) — [docs.astral.sh/uv](https://docs.astral.sh/uv/)
-
-### 2. Clone the repository
-
-Open your terminal and run:
-
-```
-git clone https://github.com/vela-wood/claude-template.git
+```sh
 cd claude-template
 ```
 
-### 3. Install dependencies
+2. If you are using Windows, switch to the Windows version of the template:
 
+```sh
+git checkout windows
 ```
+
+The default branch is set up for Mac.
+
+3. Install dependencies:
+
+```sh
 uv sync
 ```
 
-This installs Python and all required packages into a local environment. Nothing is installed globally on your system.
+4. Optionally set up the [Caption](https://dev.caption.fyi/) and NetDocs connectors:
 
-### 4. Connect your accounts
-
-```
+```sh
 uv run setup_claude.py
 ```
 
-This will prompt you to authenticate and then save the necessary credentials to a local `.env` file. You only need to do this once.
+## Basic Usage
 
-### 5. Launch Claude Code
+Laumch claude and start asking questions, you control the context by referencing documents in the folder.
 
-Open the `claude-template` folder in Claude Code and start working.
+## Available Skills
 
-## Skills
+This repo includes three local Claude skills under `.claude/skills/`:
 
-Skills are special commands you can type inside Claude Code to trigger specific workflows. Type the command and Claude takes it from there.
+### `/caption`
 
-### `/redline` — Edit and compare Word documents
+Use this for Caption transcript and workspace tasks, including:
 
-Use this when you need to:
+- searching transcripts
+- listing projects and folders
+- creating or editing Caption projects/folders
+- downloading transcript text
 
-- **Compare two versions** of a `.docx` file and see what changed.
-- **Apply edits** to a Word document with tracked changes.
-- **Extract text** from a `.docx` for review.
+### `/redline`
 
-Claude generates a redlined Word document with native Track Changes markup, just like you would see in Microsoft Word.
+Use this for Word document editing and comparisons:
 
-### `/caption` — Manage transcripts and recordings
+- compare two `.docx` files
+- preview structured edits
+- apply redlines/comments back into a `.docx`
 
-Use this when you need to:
+Important constraints:
 
-- **Search** across your transcripts for specific terms or topics.
-- **Download** a transcript from a meeting or recording.
-- **Organize** projects and folders in your Caption workspace.
+- this is the only approved way to edit Word documents in this repo
+- do not use it to create a brand-new blank Word file from scratch
+- keep output as a new redlined file unless you explicitly want the original overwritten
 
-Requires Caption account credentials (configured during setup).
+## Requirements
 
-### `/vs` — Version Story document management
+- `uv`
+- Python `3.13`
 
-Use this when you need to:
-
-- **Track versions** of documents with full history.
-- **Compare changes** between document versions.
-- **Collaborate** on documents with branching and merging.
-
-Works with `.docx` and `.pdf` files. Requires a Version Story account.
-
-## Day-to-day usage
-
-1. **Copy your matter files** (PDFs, Word docs, emails) into this folder or a subfolder.
-2. **Open the folder in Claude Code.**
-3. **Ask Claude what you need** — summarize a contract, compare two drafts, find a clause, draft a response.
-4. **Use skills** (`/redline`, `/caption`, `/vs`) for specialized workflows.
-
-Claude automatically converts your files to a readable format, keeps an index of what's in the folder, and journals what it did so you have a record.
+Do not rely on bare `python` from the command line in this repo. Use `uv run ...`.
