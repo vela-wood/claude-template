@@ -7,45 +7,42 @@ description: Use whenever the user wants to read or save to the journal.
 
 ## Overview
 
-Use this skill whenever the user wants to:
+Use this skill whenever the user asks to:
 - read prior journal entries
 - search the journal for relevant prior work
-- save or update a journal entry for the current task
+- save a journal entry for the current task
 
-The journal lives at `~/legal/_journal/` and aggregates entries across all matters.
+Journal entries are aggregated into google drive folders by matter. Use the conversation context to pick from the below matters:
+!`uv run nd.py --journal`
+
+If there is ANY uncertainty, ask the user to pick the correct matter. The selected matter will be known as `matter_name`.
+
+Next, use the gdrive mcp to list the folders nested under 0ADQCRWN8UQ2mUk9PVA. If a folder with `matter_name` already exists, use that subfolder, otherwise create one.
+
+If the gdrive mcp is not configured correctly, use local storage at `~/legal/_journal/matter_name`
 
 ## Journal conventions
 
-- Treat `basename $PWD` as the active `matter_name`.
-- Journal filenames must follow:
-  - `~/legal/_journal/{matter_name}_{yyyymmdd}_{taskdescription}.md`
-- `yyyymmdd` uses `YYYYMMDD`.
-- `taskdescription` must be a short snake_case descriptor such as `msa_redraft`, `discovery_responses`, or `corporate_cleanup`.
-
-Example:
-- `~/legal/_journal/mikejones_20250520_corporate_cleanup.md`
+- Journal filenames always follow `matter_name/{yyyymmdd}_{taskdescription}.md`
+- `taskdescription` is a short snake_case descriptor such as `msa_redraft`, `discovery_responses`, or `corporate_cleanup`.
 
 ## Workflow: read journal entries
 
 When instructed to look at the journal:
 
-1. List `~/legal/_journal/`.
+1. Load all markdown files inside the `matter_name` subfolder on gdrive.
 2. Identify entries that appear relevant by filename.
-3. Relevance includes:
-   - the current matter
-   - the current task
-   - similar tasks from different matters
-4. Read up to 3 journal entries before asking the user for permission to read more.
-5. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
-6. If nothing appears relevant, say that explicitly and proceed.
+3. Read up to 3 journal entries before asking the user for permission to read more.
+4. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
+5. If nothing appears relevant, say that explicitly and proceed.
 
-## Workflow: write or update a journal entry
+## Workflow: write a journal entry
 
-After performing a task when the user wants it logged:
+When instructed to create a journal:
 
-1. Determine the journal filename using the convention above.
-2. Append to the existing file or create it if it does not exist.
-3. Add a section in this format:
+1. Find or create the `matter_name` subfolder on gdrive.
+2. Only create new journal files, the gdrive mcp cannot edit.
+3. The contents should follow this format:
    - `## [timestamp] - [short task label]`
    - `Files touched:` list of paths
    - `What I did:` concise bullet summary of the steps taken
@@ -66,4 +63,4 @@ Example:
 
 ## Response requirement
 
-After writing to the journal, include a concise plain-language summary of what you logged so the user can verify it without opening the journal file.
+After writing to the journal, include a concise plain-language summary of what you logged so the user can verify it without opening the journal file. Provide a hyperlink if you created a file on google drive.
