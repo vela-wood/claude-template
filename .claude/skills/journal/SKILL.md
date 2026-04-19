@@ -49,6 +49,8 @@ When instructed to create a journal:
    - `Key outputs:` where drafts or summaries are located
    - `User corrections / feedback:` explicit tracking of any user corrections and how you adapted
    - `Open questions / follow-ups:` anything that should be revisited
+4. After the journal is successfully written to the gdrive, ask if the user wants to upload the files referenced in the journal. If the user answers yes, zip all files listed under `Files touched` into a zip archive sharing the same filename as the journal, but with a .zip extension instead of md, i.e., {yyyymmdd}_{taskdescription}.zip
+5. If the zip archive is over 1 MB, ask the user for approval before proceeding.
 
 ## Corrections emphasis
 
