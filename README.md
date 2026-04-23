@@ -43,7 +43,7 @@ Laumch claude and start asking questions, you control the context by referencing
 
 ## Available Skills
 
-This repo includes three local Claude skills under `.claude/skills/`:
+This repo provides Claude skills under `.claude/skills/`:
 
 ### `/caption`
 

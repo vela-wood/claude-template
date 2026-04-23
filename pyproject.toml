@@ -26,7 +26,7 @@ netdocs = "netdocs.__main__:main"
 
 [dependency-groups]
 caption = [
-    "caption-cli @ git+https://github.com/sec-chair/caption-cli.git",
+    "caption-cli @ git+https://github.com/sec-chair/caption-cli.git@5d65dcdae111dcdfbfa42ee4981a088f3294e3b0",
 ]
 redline = [
     "adeu @ git+https://github.com/dealfluence/adeu.git",

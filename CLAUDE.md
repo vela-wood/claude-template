@@ -27,17 +27,6 @@
 2. **Convert files to markdown**
    - Use `uv run startup.py` 
 
-3. **[OPTIONAL] read journal**
-   - If instructed to look at the journal...
-   - List `~/legal/_journal/`.
-   - The _journal folder aggregates entries from all matters, not just the active matter.
-   - Filenames will follow this syntax: `{matter_name}_{yyyymmdd}_{taskdescription}.md`
-   - Identify files which appear related to the current matter or task by filename and read them.
-   - Relevance includes similar tasks across different matters.
-   - Read up to 3 journal entries before asking the user for permission to read additional ones.
-   - Briefly summarize any relevant prior work, decisions, or user preferences from those journal entries.
-   - If nothing seems relevant, state that explicitly and proceed.
-
 Then proceed to the main task.
 
 ## 4. Tooling rules
@@ -178,41 +167,7 @@ For any substantial task (drafting, revising, analyzing):
      - The requested work product (e.g., draft text, markup instructions).
      - A short “Issues / Assumptions” section.
 
-6. **Journaling**
-   - Update or create a journal entry as described below.
-
-## 7. Journaling protocol
-
-After performing any task:
-
-1. **Determine journal filename**
-   - The journal file path must be:
-     - `~/legal/_journal/{matter_name}_{yyyymmdd}_{taskdescription}.md`
-   - `matter_name`: `basename $PWD` (the matter name is that of the current working folder).
-   - `yyyymmdd`: current date in `YYYYMMDD` format.
-   - `taskdescription`: short, snake_case descriptor of the task (e.g., `msa_redraft`, `discovery_responses`, `corporate_cleanup`).
-
-   Example:
-   - `~/legal/_journal/mikejones_20250520_corporate_cleanup.md`
-
-2. **Content of journal entries**
-   - Append (or create) a section with:
-     - `## [timestamp] – [short task label]`
-     - “Files touched:” list (paths).
-     - “What I did:” concise bullet summary of the steps taken.
-     - “Key outputs:” where drafts or summaries are located.
-     - “User corrections / feedback:” explicit tracking of any corrections made by the user, including how you adapted.
-     - “Open questions / follow-ups:” anything that should be revisited.
-
-3. **Corrections emphasis**
-   - When the user corrects you:
-     - Capture exactly what was wrong and the corrected version.
-     - State how this affects future work (e.g., “Always treat X as Y in this matter unless explicitly changed.”).
-
-4. **Summarize back to the user**
-   - At the end of your response, provide a concise textual summary of what was logged so the user can see, in plain language, what went into the journal.
-
-## 8. When unsure
+## 7. When unsure
 
 - If tool behavior, file choice, or legal assumptions materially affect the outcome:
   - State the assumption.
