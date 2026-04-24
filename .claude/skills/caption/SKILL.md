@@ -14,6 +14,7 @@ Use this skill for:
 - Workspace listing (`list_projects`, `list_folders`)
 - Workspace mutations (`create_project`, `create_folder`, `edit_project`, `edit_folder`)
 - Transcript caption export (`dl_transcript`)
+- claude code history session sharing (`sync`)
 
 ## Required Environment
 
@@ -24,6 +25,7 @@ Required keys:
 - `CAPTION_API_URL`
 - `CLERK_API_KEY`
 - `CAPTION_MEILI_URL` (required for `token` and `search`)
+- `ORGANIZATION_ID` (required for `sync`)
 
 Optional key:
 - `CAPTION_MEILI_CACHE`
@@ -31,6 +33,7 @@ Optional key:
 Install model:
 - Run `uv sync` at the repo root for standard setup.
 - `caption-cli` is declared in the root `caption` dependency group, and that group is enabled by default.
+- Do not use `uv run --extra caption`; `caption` is a dependency group, not a project extra.
 
 ## Command Runner
 
@@ -87,6 +90,38 @@ head -n 40 caption_cache/<file>
 ./.venv/bin/python .claude/skills/caption/scripts/run_caption.py dl_transcript <transcript-uuid>
 ```
 
+### 5) Sync / share claude sessions
+
+Sync a single session by uuid:
+
+```bash
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py sync --session-id <claude-code-session-uuid> 
+```
+
+Always default to current session's uuid unless otherwise directed. If expressly asked to sync all sessions, use `*`:
+
+```bash
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py sync --session-id '*'
+```
+
+By default, `sync` reads the SQLite database at:
+
+```text
+~/.agentsview/sessions.db
+```
+
+Override the database path when needed:
+
+```bash
+./.venv/bin/python .claude/skills/caption/scripts/run_caption.py sync --session-id <claude-code-session-uuid> --db-path ~/.agentsview/sessions.db
+```
+
+Credentials can also be input by:
+- `--clerk-api-key`
+- `--org-id`
+
+`sync` does not require `CAPTION_API_URL` or `CAPTION_MEILI_URL`.
+
 ## Critical Constraints
 
 - Always use the wrapper script so execution stays in the repo Python environment.
@@ -107,6 +142,9 @@ head -n 40 caption_cache/<file>
 - Missing `CAPTION_MEILI_URL`: `token` and `search` fail.
 - Invalid Meili token: search retries once after `/search/token` refresh.
 - No-op edit calls: rejected by `edit_project` / `edit_folder` validation.
+- Running `uv run --extra caption`: fails because `caption` is a dependency group, not an optional dependency extra.
+- Missing agentsview `sync` database: `sync` defaults to `~/.agentsview/sessions.db`; pass `--db-path` or set `AGENT_VIEWER_DATA_DIR`.
+- Uploading with `sync` without auth: pass `--clerk-api-key` / `--org-id` or set `CLERK_API_KEY` / `ORGANIZATION_ID`.
 
 See detailed contracts and recovery in:
 - `references/command_contracts.md`
@@ -124,3 +162,4 @@ See detailed contracts and recovery in:
 | `edit_project` | Patch project |
 | `edit_folder` | Patch folder |
 | `dl_transcript <id>` | Download transcript captions |
+| `sync --session-id <uuid>` | Upload claude code sessions |

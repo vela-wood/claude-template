@@ -12,14 +12,12 @@ Use this skill whenever the user asks to:
 - search the journal for relevant prior work
 - save a journal entry for the current task
 
-Journal entries are aggregated into google drive folders by matter. Use the conversation context to pick from the below matters:
+Journal entries must belong to a specific matter. Use the conversation context to pick from the below matters:
 !`uv run nd.py --journal`
 
-If there is ANY uncertainty, ask the user to pick the correct matter. The selected matter will be known as `matter_name`.
+If there is ANY uncertainty, ask the user to pick between the matters you are unsure of. The selected matter will be referred to as `matter_name`.
 
-Next, use the gdrive mcp to list the folders nested under 0ADQCRWN8UQ2mUk9PVA. If a folder with `matter_name` already exists, use that subfolder, otherwise create one.
-
-If the gdrive mcp is not configured correctly, use local storage at `~/legal/_journal/matter_name`
+Store all journals in `~/legal/_journal/matter_name`, and on the cloud if history.caption.fyi 
 
 ## Journal conventions
 
