@@ -29,6 +29,9 @@ def _ensure_repo_imports(repo_root: Path) -> None:
 
 
 def _caption_bin_for_repo(repo_root: Path) -> Path:
+    win = repo_root / ".venv" / "Scripts" / "caption.exe"
+    if win.exists():
+        return win
     return repo_root / ".venv" / "bin" / "caption"
 
 
