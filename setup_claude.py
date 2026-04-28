@@ -9,7 +9,7 @@ from typing import Mapping
 import httpx
 from dotenv.parser import parse_stream
 
-SETUP_PAGE_URL = "https://dev.caption.fyi/claude_setup"
+SETUP_PAGE_URL = "https://app.caption.fyi/claude_setup"
 SETUP_API_URL = "https://chat.caption.fyi/claude_setup"
 ROOT_KEYS_TO_SKIP = {"primary_email_address", "organizations"}
 NAMED_CREDENTIAL_KEY_FIELDS = ("name", "key", "env", "env_var", "variable")
