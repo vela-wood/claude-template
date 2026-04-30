@@ -8,14 +8,10 @@ dependencies = [
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "markitdown[pdf, docx, pptx, outlook]",
-    "meilisearch>=0.40.0",
-    "openpyxl>=3.1.5",
     "pyperclip>=1.11.0",
-    "python-docx>=1.2.0",
     "python-dotenv>=1.2.1",
     "rapidfuzz>=3.14.3",
     "requests>=2.32.0",
-    "tabulate>=0.9.0",
     "textual>=6.9.0",
     "textual-fspicker>=0.6.0",
     "tiktoken>=0.8.0",
@@ -25,16 +21,13 @@ dependencies = [
 netdocs = "netdocs.__main__:main"
 
 [dependency-groups]
-caption = [
-    "caption-cli @ git+https://github.com/sec-chair/caption-cli.git@5d65dcdae111dcdfbfa42ee4981a088f3294e3b0",
-]
 redline = [
-    "adeu @ git+https://github.com/dealfluence/adeu.git",
+    "adeu @ git+https://github.com/dealfluence/adeu.git@be314deac9c598c7b17a00fb04da0b0597283726",
 ]
 
 [tool.uv]
 package = true
-default-groups = ["caption", "redline"]
+default-groups = ["redline"]
 
 [tool.setuptools.packages.find]
 include = ["netdocs*"]
