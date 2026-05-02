@@ -4,10 +4,10 @@
     "allow": [
       "Bash(uv run markitdown:*)",
       "Bash(uv run startup.py:*)",
-      "Bash(.claude/skills/redline/scripts/run_redline.sh:*)",
-      "Bash(.claude/skills/redline/scripts/run_caption.sh:*)",
+      "Bash(uv run nd.py:*)",
+      "Bash(uv tool install --force --python 3.13 \"caption-cli @ git+https://github.com/sec-chair/caption-cli.git\")",
+      "Bash(.claude/skills/redline/scripts/run_redline:*)",
       "Bash(.venv/bin/adeu:*)",
-      "Bash(.venv/bin/caption:*)",
       "Bash(grep:*)",
       "Bash(find:*)"
     ]
