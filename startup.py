@@ -270,14 +270,11 @@ def main():
             shutil.rmtree(child)
 
     print("Additional features...")
-    print(f"Caption heavy output directory: {caption_output_dir}")
+    print(f"Caption cache directory: {caption_output_dir}")
     nd_vars = ("MATTERS_DB", "ND_API_KEY", "NDHELPER_URL")
     if all(os.getenv(var) for var in nd_vars):
         print("Netdocs access with\n\tuv run python nd.py -h")
-    artifact_vars = ("ARTIFACT_API_TOKEN", "ARTIFACT_URL")
-    if all(os.getenv(var) for var in artifact_vars):
-        print("\nMarkdown PDF artifact removal with\n\tuv run python tools/remove_artifacts.py -h")
-
+    
     # 1. Load existing indices
     hash_index = load_hash_index(root)
     token_index = load_token_index(root)
@@ -298,7 +295,7 @@ def main():
     )
 
     if not sources:
-        print("\nNo supported source files found.")
+        print("\nNo office documents found.")
         save_hash_index(root, hash_index)
         save_token_index(root, token_index)
         return
@@ -351,7 +348,7 @@ def main():
     # 9. Summary
     total_tokens = sum(token_index.values())
     skipped = len(sources) - len(converted_rels)
-    print(f"\nDone. {len(sources)} files indexed, {len(converted_rels)} converted, {skipped} unchanged.")
+    print(f"\nDone. {len(sources)} office documents indexed, {len(converted_rels)} converted, {skipped} unchanged.")
     print(f"Total tokens across converted files: {total_tokens:,}")
     print(f"Indices written to {HASH_INDEX_FILENAME} and {TOKEN_INDEX_FILENAME}")
 

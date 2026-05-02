@@ -12,55 +12,63 @@ Use this skill whenever the user asks to:
 - search the journal for relevant prior work
 - save a journal entry for the current task
 
-Journal entries must belong to a specific matter. Use the conversation context to pick from the below matters:
+Journal entries must be associated with a specific matter. Use context to select from the below matters:
 !`uv run nd.py --journal`
 
-If there is ANY uncertainty, ask the user to pick between the matters you are unsure of. The selected matter will be referred to as `matter_name`.
+If there is ANY uncertainty regarding which matter the user is working on, ask the user. Refer to the selected matter as `matter_name`.
 
-Store all journals in `~/legal/_journal/matter_name`, and on the cloud if history.caption.fyi 
+Store all journals in `~/legal/_journal/matter_name`.
 
 ## Journal conventions
 
-- Journal filenames always follow `matter_name/{yyyymmdd}_{taskdescription}.md`
+- Journal filenames must always be in the form of `{yyyymmdd}_{taskdescription}.md`
 - `taskdescription` is a short snake_case descriptor such as `msa_redraft`, `discovery_responses`, or `corporate_cleanup`.
 
-## Workflow: read journal entries
+## Workflow: writing a journal entries
 
-When instructed to look at the journal:
-
-1. Load all markdown files inside the `matter_name` subfolder on gdrive.
-2. Identify entries that appear relevant by filename.
-3. Read up to 3 journal entries before asking the user for permission to read more.
-4. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
-5. If nothing appears relevant, say that explicitly and proceed.
-
-## Workflow: write a journal entry
-
-When instructed to create a journal:
-
-1. Find or create the `matter_name` subfolder on gdrive.
-2. Only create new journal files, the gdrive mcp cannot edit.
-3. The contents should follow this format:
+When instructed to create a journal, the contents should follow this format:
+   - The firstclaude code session uuid
    - `## [timestamp] - [short task label]`
    - `Files touched:` list of paths
    - `What I did:` concise bullet summary of the steps taken
    - `Key outputs:` where drafts or summaries are located
    - `User corrections / feedback:` explicit tracking of any user corrections and how you adapted
    - `Open questions / follow-ups:` anything that should be revisited
-4. After the journal is successfully written to the gdrive, ask if the user wants to upload the files referenced in the journal. If the user answers yes, zip all files listed under `Files touched` into a zip archive sharing the same filename as the journal, but with a .zip extension instead of md, i.e., {yyyymmdd}_{taskdescription}.zip
-5. If the zip archive is over 1 MB, ask the user for approval before proceeding.
 
-## Corrections emphasis
+The user may have access to the following additional features:
+!`caption doctor`
 
-When the user corrects you:
+The below directions depend on whether the user has access to "core" or "agentsview." If the corresponding feature is not mentioned above, ignore the corresponding directions.
 
-- Capture exactly what was wrong and the corrected version.
-- State how the correction affects future work for this matter.
-- If the correction should become a standing preference, say so plainly.
+### Journal cloud storage
 
-Example:
-- `Always treat X as Y in this matter unless explicitly changed.`
+If "agentsview" is available, also sync any journal entries you save locally with:
+`caption create_md {path_to_journal_entry.md} --project-name {matter_name}`
 
-## Response requirement
+### Session cloud stoage
 
-After writing to the journal, include a concise plain-language summary of what you logged so the user can verify it without opening the journal file. Provide a hyperlink if you created a file on google drive.
+If "agentsview" is available, and the user saves a journal, ask if the user also wants to sync the entire claude code session to the cloud by posing this exact question to the user:
+
+"Would you also like to share this entire claude code session with your organization? If so, first make sure agentsview is running and has finished syncing before answering yes."
+
+If the user answers yes, run:
+
+`caption sync --session-id {this_claude_code_session_uuid} --project-name {matter_name}`
+
+## Workflow: reading journal entries
+
+When instructed to look at the journal:
+
+1. Load all markdown files inside the `matter_name` subfolder.
+2. Identify entries that appear relevant by filename.
+3. Read up to 3 journal entries before asking the user for permission to read more.
+4. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
+5. If nothing appears relevant, say that explicitly and proceed.
+
+### Reading journal entries from the cloud
+
+If "agentsview" is available, when instructed to look at the journal, also retrieve journal entries from the cloud with:
+`caption list_md --project {matter_name}`
+
+The output of `list_md` should contain summaries. Ask the user if any of the files look relevant, and if so, retrieve the full journal with:
+`caption get_md {uuid}`
