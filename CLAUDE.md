@@ -17,7 +17,7 @@
 - Always cite specific documents/sections when possible.
 - If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
 - Explain your reasoning at a professional level, like you would to a colleague.
-- Never overwrite a file unless directly instructed, default to adding e + date (YYYYMMDD format) to any file you revise, e.g., `test.docx.md` -> `test_e20260110.docx.md`
+- Never overwrite a file unless directly instructed, default to adding e + date (YYYYMMDD) to any file you revise, e.g., `test.docx.md` -> `test_e20260110.docx.md`
 
 ## 3. Startup procedure for every task
 

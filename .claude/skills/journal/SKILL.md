@@ -12,54 +12,53 @@ Use this skill whenever the user asks to:
 - search the journal for relevant prior work
 - save a journal entry for the current task
 
-Journal entries must be associated with a specific matter. Use context to select from the below matters:
+Journal entries are always associated with a specific matter. Use context to select from the below matters:
 !`uv run nd.py --journal`
 
-If there is ANY uncertainty regarding which matter the user is working on, ask the user. Refer to the selected matter as `matter_name`.
-
-Store all journals in `~/legal/_journal/matter_name`.
+If there is ANY uncertainty regarding which matter the user is working on, ask the user. After selecting a matter, only refer to it by its `matter_code`, which are the 5 numbers at the beginning of the full name, e.g. `44924`. Determine `matter_code` before proceeding with any journal operations.
+ 
+Organize and store all journals by using this directory structure: `~/legal/_journal/matter_code`.
 
 ## Journal conventions
 
-- Journal filenames must always be in the form of `{yyyymmdd}_{taskdescription}.md`
-- `taskdescription` is a short snake_case descriptor such as `msa_redraft`, `discovery_responses`, or `corporate_cleanup`.
+- Journal filenames use this format: `{yyyymmdd}_{taskdescription}.md`
+- `taskdescription` is a short snake_case descriptor such as `diligence`, `discovery_responses`, or `corporate_cleanup`.
 
-## Workflow: writing a journal entries
+## Workflow: writing a journal entry
 
-When instructed to create a journal, the contents should follow this format:
-   - The firstclaude code session uuid
-   - `## [timestamp] - [short task label]`
+When creating a journal entry, the contents should follow this format in the exact order:
+   - `TL;DR:` a concise summary of the overall task and outcome
    - `Files touched:` list of paths
    - `What I did:` concise bullet summary of the steps taken
    - `Key outputs:` where drafts or summaries are located
    - `User corrections / feedback:` explicit tracking of any user corrections and how you adapted
    - `Open questions / follow-ups:` anything that should be revisited
 
-The user may have access to the following additional features:
+The user has access to the following features:
 !`caption doctor`
 
-The below directions depend on whether the user has access to "core" or "agentsview." If the corresponding feature is not mentioned above, ignore the corresponding directions.
+Many of the directions below are contingent on whether the user has access to the "agentsview" feature.
 
 ### Journal cloud storage
 
-If "agentsview" is available, also sync any journal entries you save locally with:
-`caption create_md {path_to_journal_entry.md} --project-name {matter_name}`
+If "agentsview" is available, also sync any journal entries you save locally to the cloud with:
+`caption create_md {path_to_journal_entry.md} --project-name {matter_code}`
 
 ### Session cloud stoage
 
-If "agentsview" is available, and the user saves a journal, ask if the user also wants to sync the entire claude code session to the cloud by posing this exact question to the user:
+If "agentsview" is available, and the user saves a journal, ask if the user also wants to sync the entire claude code session to the cloud by asking the user this question verbatim:
 
-"Would you also like to share this entire claude code session with your organization? If so, first make sure agentsview is running and has finished syncing before answering yes."
+"Would you also like to share this entire terminal session with your organization? If yes, make sure agentsview is running and finished syncing before responding with yes."
 
-If the user answers yes, run:
+Then, if the user answers yes, run:
 
-`caption sync --session-id {this_claude_code_session_uuid} --project-name {matter_name}`
+`caption sync --session-id {this_claude_code_session_uuid} --project-name {matter_code}`
 
-## Workflow: reading journal entries
+## Workflow: Reading journal entries
 
-When instructed to look at the journal:
+When instructed to read the journal:
 
-1. Load all markdown files inside the `matter_name` subfolder.
+1. Load all markdown files inside the `matter_code` subfolder.
 2. Identify entries that appear relevant by filename.
 3. Read up to 3 journal entries before asking the user for permission to read more.
 4. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
@@ -68,7 +67,7 @@ When instructed to look at the journal:
 ### Reading journal entries from the cloud
 
 If "agentsview" is available, when instructed to look at the journal, also retrieve journal entries from the cloud with:
-`caption list_md --project {matter_name}`
+`caption list_md --project {matter_code}`
 
-The output of `list_md` should contain summaries. Ask the user if any of the files look relevant, and if so, retrieve the full journal with:
+The output of `list_md` should contain summaries in the `plain_text_preview` field. If any of the files look relevant, retrieve the full journal using:
 `caption get_md {uuid}`
