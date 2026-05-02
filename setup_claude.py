@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import httpx
 from dotenv.parser import parse_stream
@@ -31,6 +31,15 @@ class WriteResult:
 
 class SetupError(Exception):
     pass
+
+
+def _clean_optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned
 
 
 def drop_nulls(value: object) -> object:
@@ -197,6 +206,66 @@ def collect_organization_credentials(
     raise SetupError(f"Unsupported credentials payload at {source}.")
 
 
+def collect_organization_metadata(
+    env_values: dict[str, str],
+    skipped_null_keys: set[str],
+    organization: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    organization_id = organization.get("organization_id")
+    if organization_id is None:
+        skipped_null_keys.add("ORGANIZATION_ID")
+        return
+
+    merge_env_value(
+        env_values,
+        "ORGANIZATION_ID",
+        organization_id,
+        source=f"{source}.organization_id",
+    )
+
+
+def choose_organization_payload(
+    payload: Mapping[str, object],
+    *,
+    prompt: Callable[[str], str] = input,
+    output: Callable[[str], None] = print,
+) -> Mapping[str, object]:
+    organizations = payload.get("organizations", [])
+    if organizations is None:
+        return payload
+    if not isinstance(organizations, list):
+        raise SetupError("'organizations' must be an array.")
+    if len(organizations) <= 1:
+        return payload
+
+    validated_organizations: list[Mapping[str, object]] = []
+    output("Multiple organizations found. Select which organization's credentials to load:")
+    for index, organization in enumerate(organizations, start=1):
+        if not isinstance(organization, Mapping):
+            raise SetupError(f"'organizations[{index}]' must be an object.")
+        validated_organizations.append(organization)
+        organization_name = _clean_optional_text(organization.get("organization_name")) or f"Organization {index}"
+        organization_id = _clean_optional_text(organization.get("organization_id")) or "<missing organization_id>"
+        output(f"  {index}. {organization_name}: {organization_id}")
+
+    while True:
+        raw_selection = prompt(f"Select organization to load [1-{len(validated_organizations)}]: ").strip()
+        if not raw_selection:
+            output("Enter the number of the organization to load.")
+            continue
+        if not raw_selection.isdigit():
+            output("Enter a valid number.")
+            continue
+        selected_index = int(raw_selection)
+        if 1 <= selected_index <= len(validated_organizations):
+            selected_payload = dict(payload)
+            selected_payload["organizations"] = [validated_organizations[selected_index - 1]]
+            return selected_payload
+        output(f"Enter a number between 1 and {len(validated_organizations)}.")
+
+
 def build_env_values(payload: Mapping[str, object]) -> BuildResult:
     env_values: dict[str, str] = {}
     skipped_null_keys: set[str] = set()
@@ -221,6 +290,12 @@ def build_env_values(payload: Mapping[str, object]) -> BuildResult:
     for index, organization in enumerate(organizations, start=1):
         if not isinstance(organization, Mapping):
             raise SetupError(f"'organizations[{index}]' must be an object.")
+        collect_organization_metadata(
+            env_values,
+            skipped_null_keys,
+            organization,
+            source=f"organizations[{index}]",
+        )
         collect_organization_credentials(
             env_values,
             skipped_null_keys,
@@ -330,7 +405,8 @@ def main() -> int:
     try:
         auth_token = prompt_for_token()
         payload = fetch_setup_payload(auth_token)
-        build_result = build_env_values(payload)
+        selected_payload = choose_organization_payload(payload)
+        build_result = build_env_values(selected_payload)
         write_result = write_env_file(env_file, build_result.env_values)
     except SetupError as exc:
         print(f"Error: {exc}")
