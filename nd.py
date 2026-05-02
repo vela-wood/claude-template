@@ -16,11 +16,12 @@ def main():
     parser.add_argument("--version", type=int, default=1, help="Version to download (default: 1)")
     parser.add_argument("--name", help="Output filename (default: derived from document)")
     parser.add_argument("--recent", action="store_true", help="Show recent matters")
+    parser.add_argument("--journal", action="store_true", help="Show recent matters for journal skill")
 
     args = parser.parse_args()
 
     # If no CLI flags, launch TUI
-    if not any([args.ls, args.dl, args.recent]):
+    if not any([args.ls, args.dl, args.recent, args.journal]):
         from netdocs import NetDocsApp
         NetDocsApp().run()
         return
@@ -35,6 +36,15 @@ def main():
         print("Recent matters:")
         for doc_id, label in config["recent_matters"].items():
             print(f"  {doc_id}  {label}")
+        return
+
+    if args.journal:
+        config = load_config()
+        if "recent_matters" not in config or not config["recent_matters"]:
+            print("No recent matters found.")
+            return
+        for doc_id, label in config["recent_matters"].items():
+            print(label)
         return
 
     # For ls and dl, we need NDHelper

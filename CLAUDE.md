@@ -12,31 +12,19 @@
 ## 2. Rules
 
 - Do not guess about the file system, always inspect it using command line tools (e.g., `osgrep`, `ls`, `find`, `rg`).
-- Do not hallucinate facts or law. If information is missing, say so.
-- Err on the side of asking the user for clarification.
-- If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
-- Explain your reasoning at a professional level, like you would to a colleague
+- Never hallucinate facts or law. If information is missing, say so.
+- Always err on the side of asking the user for clarification.
 - Always cite specific documents/sections when possible.
-- Avoid overwriting files unless directly instructed, default to adding e + date (YYYYMMDD format) to any file you revise, e.g., `test.docx.md` -> `test_e20260110.docx.md`
+- If jurisdiction, governing law, or procedural posture matter and are unclear, explicitly flag that assumption.
+- Explain your reasoning at a professional level, like you would to a colleague.
+- Never overwrite a file unless directly instructed, default to adding e + date (YYYYMMDD) to any file you revise, e.g., `test.docx.md` -> `test_e20260110.docx.md`
 
 ## 3. Startup procedure for every task
 
-1. **Identify the working folder**
-   - Treat $PWD as the active matter folder; let matter_name = basename $PWD 
+Always run the tasks below before proceeding to the main task:
 
-2. **Convert files to markdown**
+1. **Convert files to markdown**
    - Use `uv run startup.py` 
-
-3. **[OPTIONAL] read journal**
-   - If instructed to look at the journal...
-   - List `~/legal/_journal/`.
-   - The _journal folder aggregates entries from all matters, not just the active matter.
-   - Filenames will follow this syntax: `{matter_name}_{yyyymmdd}_{taskdescription}.md`
-   - Identify files which appear related to the current matter or task by filename and read them.
-   - Relevance includes similar tasks across different matters.
-   - Read up to 3 journal entries before asking the user for permission to read additional ones.
-   - Briefly summarize any relevant prior work, decisions, or user preferences from those journal entries.
-   - If nothing seems relevant, state that explicitly and proceed.
 
 Then proceed to the main task.
 
@@ -82,7 +70,7 @@ Procedure:
 
 ### 4.4 Other file extensions
 
-- Plain-text formats (`.txt`, `.md`, `.yaml`, `.json`, `.py`, `.sh`, etc.) can be read directly.
+- Plain-text formats can be read directly.
 
 ### 4.5 Token counts
 
@@ -94,25 +82,7 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 
 - ONLY use the /redline skill to edit word documents. Do not use any other method.
 
-### 4.7 Removing PDF artifacts (watermarks, headers, footers)
-
-- If a .pdf.md file contains artifacts, clean it with `uv run tools/remove_artifacts.py`. 
-- Use the --output flag to overwrite the file in place.
-
-```
-usage: remove_artifacts.py [-h] [--output OUTPUT] input_md
-
-Remove PDF artifacts via cleaning API.
-
-positional arguments:
-  input_md              Path to input markdown file
-
-options:
-  -h, --help            show this help message and exit
-  --output OUTPUT       Optional output path. Defaults to input name with _cleaned suffix.
-```
-
-### 4.8 Netdocs access
+### 4.7 Netdocs access
 
 Only search Netdocs if (1) instructed by the user AND (2) the output of `uv run startup.py` indicated Netdocs access was available.
 
@@ -123,7 +93,7 @@ NEVER `uv run nd.py` without options, this opens a text user interface intended 
 
 ## 5. File discovery and selection
 
-If a file is directly referenced with @, ALWAYS read the entire file into context instead of following the below process which is for research and exploration. Otherwise follow the below.
+If a file is directly referenced with @, ALWAYS read the entire file into context and do not use the below directions, which are for research and exploration tasks:
 
 1. **Consider total tokens**
    - If the total tokens across converted files (use `uv run startup.py` if necessary) is under 50k, jump to step 4 and read all converted files with Explore subagents.
@@ -178,41 +148,7 @@ For any substantial task (drafting, revising, analyzing):
      - The requested work product (e.g., draft text, markup instructions).
      - A short “Issues / Assumptions” section.
 
-6. **Journaling**
-   - Update or create a journal entry as described below.
-
-## 7. Journaling protocol
-
-After performing any task:
-
-1. **Determine journal filename**
-   - The journal file path must be:
-     - `~/legal/_journal/{matter_name}_{yyyymmdd}_{taskdescription}.md`
-   - `matter_name`: `basename $PWD` (the matter name is that of the current working folder).
-   - `yyyymmdd`: current date in `YYYYMMDD` format.
-   - `taskdescription`: short, snake_case descriptor of the task (e.g., `msa_redraft`, `discovery_responses`, `corporate_cleanup`).
-
-   Example:
-   - `~/legal/_journal/mikejones_20250520_corporate_cleanup.md`
-
-2. **Content of journal entries**
-   - Append (or create) a section with:
-     - `## [timestamp] – [short task label]`
-     - “Files touched:” list (paths).
-     - “What I did:” concise bullet summary of the steps taken.
-     - “Key outputs:” where drafts or summaries are located.
-     - “User corrections / feedback:” explicit tracking of any corrections made by the user, including how you adapted.
-     - “Open questions / follow-ups:” anything that should be revisited.
-
-3. **Corrections emphasis**
-   - When the user corrects you:
-     - Capture exactly what was wrong and the corrected version.
-     - State how this affects future work (e.g., “Always treat X as Y in this matter unless explicitly changed.”).
-
-4. **Summarize back to the user**
-   - At the end of your response, provide a concise textual summary of what was logged so the user can see, in plain language, what went into the journal.
-
-## 8. When unsure
+## 7. When unsure
 
 - If tool behavior, file choice, or legal assumptions materially affect the outcome:
   - State the assumption.
@@ -221,3 +157,14 @@ After performing any task:
 
 - If an instruction conflicts with this AGENTS file:
   - Defer to the user’s explicit instruction and briefly note the conflict.
+
+## 8. Learning from corrections
+
+When the user corrects you:
+
+- Capture exactly what was wrong and the corrected version and store it using the journal skill.
+- State how the correction affects future work for this matter.
+- If the correction should become a standing preference, say so plainly.
+
+Example:
+- `Always treat X as Y in this matter unless explicitly changed.`

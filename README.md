@@ -25,25 +25,39 @@ git checkout windows
 
 The default branch is set up for Mac.
 
-3. Install dependencies:
+3. Install repo dependencies:
 
 ```sh
 uv sync
 ```
 
-4. Optionally set up the [Caption](https://dev.caption.fyi/) and NetDocs connectors:
+4. Install the Caption CLI tool:
+
+```sh
+uv tool install --force --python 3.13 "caption-cli @ git+https://github.com/sec-chair/caption-cli.git"
+```
+
+If `caption` is not found after install, run:
+
+```sh
+uv tool update-shell
+```
+
+5. Optionally set up the [Caption](https://app.caption.fyi/) and NetDocs connectors:
 
 ```sh
 uv run setup_claude.py
 ```
 
+`setup_claude.py` writes credentials and Claude connector settings. It does not install tools.
+
 ## Basic Usage
 
-Laumch claude and start asking questions, you control the context by referencing documents in the folder.
+Launch Claude and start asking questions. You control the context by referencing documents in the folder.
 
 ## Available Skills
 
-This repo includes three local Claude skills under `.claude/skills/`:
+This repo provides Claude skills under `.claude/skills/`:
 
 ### `/caption`
 

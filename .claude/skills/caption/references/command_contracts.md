@@ -5,23 +5,29 @@
 Use:
 
 ```bash
-./.venv/bin/python .claude/skills/caption/scripts/run_caption.py <global-flags> <command> [command-flags]
+caption <global-flags> <command> [command-flags]
 ```
 
 Standard install path:
-- Run `uv sync` at the repo root.
-- The root `caption` dependency group is enabled by default, so the shared repo `.venv` should contain `.venv/bin/caption`.
+- Run `uv sync` at the repo root for repo dependencies.
+- Install `caption-cli` globally:
+
+```bash
+uv tool install --force --python 3.13 "caption-cli @ git+https://github.com/sec-chair/caption-cli.git"
+```
+
+- If `caption` is not found after installation, run `uv tool update-shell`.
 
 Global flags:
 - `--cache-path <path>`
 - `--output json|table|md`
-- `--env-file <path>` (override root `.env` only when explicitly required)
+- `--output-file <path>`
+- `--env-file <path>`
 
-Token-heavy wrapper behavior (`list_projects`, `list_folders`, `dl_transcript`):
-- `list_projects` overwrites `<repo-root>/caption_cache/list_projects.out`
-- `list_folders` overwrites `<repo-root>/caption_cache/list_folders.out`
-- `dl_transcript` overwrites `<repo-root>/caption_cache/<transcript_uuid>.txt`
-- Terminal stdout is only: `Saved <command> output to <path>`
+Token-heavy output behavior:
+- `caption --output-file caption_cache/list_projects.out list_projects`
+- `caption --output-file caption_cache/list_folders.out list_folders`
+- `caption --output-file caption_cache/<transcript-uuid>.txt dl_transcript <transcript-uuid>`
 - Inspect saved output with:
   - `ls -lt caption_cache`
   - `tail -n 40 caption_cache/<file>`
@@ -36,8 +42,8 @@ Purpose:
 Usage:
 
 ```bash
-... run_caption.py token
-... run_caption.py token --show-token
+caption token
+caption token --show-token
 ```
 
 Output keys:
@@ -51,7 +57,7 @@ Output keys:
 Usage:
 
 ```bash
-... run_caption.py search "term" --index transcript_captions_v1 --limit 5
+caption search "term" --index transcript_captions_v1 --limit 5
 ```
 
 Defaults:
@@ -67,7 +73,8 @@ Behavior:
 Usage:
 
 ```bash
-... run_caption.py --output json list_projects
+caption --output-file caption_cache/list_projects.out list_projects
+caption --output json list_projects
 ```
 
 Output:
@@ -79,7 +86,8 @@ Output:
 Usage:
 
 ```bash
-... run_caption.py --output json list_folders
+caption --output-file caption_cache/list_folders.out list_folders
+caption --output json list_folders
 ```
 
 Output:
@@ -91,8 +99,8 @@ Output:
 Usage:
 
 ```bash
-... run_caption.py create_project "My Project" --description "First draft"
-... run_caption.py create_project "My Project" --workspace-id <workspace-uuid>
+caption create_project "My Project" --description "First draft"
+caption create_project "My Project" --workspace-id <workspace-uuid>
 ```
 
 ## `create_folder`
@@ -100,8 +108,8 @@ Usage:
 Usage:
 
 ```bash
-... run_caption.py create_folder "My Folder" --description "Folder notes"
-... run_caption.py create_folder "My Folder" --parent <folder-uuid>
+caption create_folder "My Folder" --description "Folder notes"
+caption create_folder "My Folder" --parent <folder-uuid>
 ```
 
 ## `edit_project`
@@ -109,9 +117,9 @@ Usage:
 Usage:
 
 ```bash
-... run_caption.py edit_project <project-uuid> --name "Renamed"
-... run_caption.py edit_project <project-uuid> --description "Updated" --folder <folder-uuid>
-... run_caption.py edit_project <project-uuid> --clear-description --clear-folder
+caption edit_project <project-uuid> --name "Renamed"
+caption edit_project <project-uuid> --description "Updated" --folder <folder-uuid>
+caption edit_project <project-uuid> --clear-description --clear-folder
 ```
 
 Validation:
@@ -125,9 +133,9 @@ Validation:
 Usage:
 
 ```bash
-... run_caption.py edit_folder <folder-uuid> --name "Renamed"
-... run_caption.py edit_folder <folder-uuid> --description "Updated" --parent <folder-uuid>
-... run_caption.py edit_folder <folder-uuid> --clear-description --clear-parent
+caption edit_folder <folder-uuid> --name "Renamed"
+caption edit_folder <folder-uuid> --description "Updated" --parent <folder-uuid>
+caption edit_folder <folder-uuid> --clear-description --clear-parent
 ```
 
 Validation:
@@ -141,10 +149,24 @@ Validation:
 Usage:
 
 ```bash
-... run_caption.py dl_transcript <transcript-uuid>
-... run_caption.py --output json dl_transcript <transcript-uuid>
+caption --output-file caption_cache/<transcript-uuid>.txt dl_transcript <transcript-uuid>
+caption --output json dl_transcript <transcript-uuid>
 ```
 
 Output:
 - Default markdown: `[HH:MM.SS] speaker: content`
 - Optional JSON payload with `transcriptId`, `items`, `count`
+
+## `sync`
+
+Usage:
+
+```bash
+caption sync --session-id <session-id>
+caption sync --session-id '*'
+caption sync --session-id <session-id> --db-path ~/.agentsview/sessions.db
+```
+
+Required auth:
+- `CLERK_API_KEY`
+- `ORGANIZATION_ID`

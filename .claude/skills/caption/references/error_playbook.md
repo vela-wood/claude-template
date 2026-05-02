@@ -8,22 +8,29 @@ Symptoms:
 - `Missing Meilisearch URL`
 
 Recovery:
-1. Confirm `<repo-root>/.env` exists.
+1. Confirm the needed environment variables are available to the `caption` process.
 2. Confirm required keys are present and non-empty.
 3. Re-run with explicit env file if needed:
 
 ```bash
-./.venv/bin/python .claude/skills/caption/scripts/run_caption.py --env-file <repo-root>/.env list_projects
+caption --env-file "$PWD/.env" list_projects
 ```
 
 ## Missing Installed CLI
 
 Symptoms:
-- `caption binary not found at <repo-root>/.venv/bin/caption`
+- `caption executable not found on PATH`
+- `command not found: caption`
 
 Recovery:
-1. Run `uv sync` at the repo root. The default `caption` group should install `caption` into the shared repo `.venv`.
-2. Re-run the wrapper command after the root `.venv` has been refreshed.
+1. Install the global tool:
+
+```bash
+uv tool install --force --python 3.13 "caption-cli @ git+https://github.com/sec-chair/caption-cli.git"
+```
+
+2. If `caption` is still unavailable, run `uv tool update-shell` or add uv's tool executable directory to `PATH`.
+3. Do not substitute a repo-local launcher.
 
 ## Token/Auth Failures on Search
 
@@ -76,11 +83,13 @@ Recovery:
 ## Token-Heavy Command Output Location
 
 Symptoms:
-- `list_projects`, `list_folders`, or `dl_transcript` only prints `Saved <command> output to <path>`
+- `list_projects`, `list_folders`, or `dl_transcript` produces too much terminal output
 
 Recovery:
-1. List recent files: `ls -lt caption_cache`
-2. `list_projects` and `list_folders` always overwrite `caption_cache/list_projects.out` and `caption_cache/list_folders.out`.
-3. `dl_transcript` always overwrites `caption_cache/<transcript_uuid>.txt`.
-4. Preview output: `tail -n 40 caption_cache/<file>`
-5. Read full output when needed: `cat caption_cache/<file>`
+1. Use direct output-file commands:
+   - `caption --output-file caption_cache/list_projects.out list_projects`
+   - `caption --output-file caption_cache/list_folders.out list_folders`
+   - `caption --output-file caption_cache/<transcript-uuid>.txt dl_transcript <transcript-uuid>`
+2. List recent files: `ls -lt caption_cache`
+3. Preview output: `tail -n 40 caption_cache/<file>`
+4. Read full output when needed: `cat caption_cache/<file>`

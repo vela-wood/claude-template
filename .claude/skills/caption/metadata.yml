@@ -1,6 +1,6 @@
-name: caption-cli
+name: caption
 type: reference-documentation
-description: Local CLI workflows for Caption API and Meilisearch using root .env configuration
+description: Global caption CLI workflows for Caption API, Meilisearch, and session sync
 version: 0.1.0
 agent_doc: SKILL.md
 commands:
@@ -13,3 +13,4 @@ commands:
   - edit_project
   - edit_folder
   - dl_transcript
+  - sync
