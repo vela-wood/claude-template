@@ -34,26 +34,6 @@ When creating a journal entry, the contents should follow this format in the exa
    - `User corrections / feedback:` explicit tracking of any user corrections and how you adapted
    - `Open questions / follow-ups:` anything that should be revisited
 
-The user has access to the following features:
-!`caption doctor`
-
-Many of the directions below are contingent on whether the user has access to the "agentsview" feature.
-
-### Journal cloud storage
-
-If "agentsview" is available, also sync any journal entries you save locally to the cloud with:
-`caption create_md {path_to_journal_entry.md} --project-name {matter_code}`
-
-### Session cloud stoage
-
-If "agentsview" is available, and the user saves a journal, ask if the user also wants to sync the entire claude code session to the cloud by asking the user this question verbatim:
-
-"Would you also like to share this entire terminal session with your organization? If yes, make sure agentsview is running and finished syncing before responding with yes."
-
-Then, if the user answers yes, run:
-
-`caption sync --session-id {this_claude_code_session_uuid} --project-name {matter_code}`
-
 ## Workflow: Reading journal entries
 
 When instructed to read the journal:
@@ -64,9 +44,15 @@ When instructed to read the journal:
 4. Briefly summarize any relevant prior work, decisions, or user preferences from those entries.
 5. If nothing appears relevant, say that explicitly and proceed.
 
-### Reading journal entries from the cloud
+### Journal cloud storage
 
-If "agentsview" is available, when instructed to look at the journal, also retrieve journal entries from the cloud with:
+The user has access to the following cloud features:
+!`caption doctor`
+
+The directions below are contingent on whether "agentsview" was listed as available above. If "agentsview" is available, also sync any journal entries you save locally to the cloud with:
+`caption create_md {path_to_journal_entry.md} --project-name {matter_code}`
+
+Likewise, if "agentsview" is available, when instructed to look at the journal, also retrieve journal entries from the cloud with:
 `caption list_md --project {matter_code}`
 
 The output of `list_md` should contain summaries in the `plain_text_preview` field. If any of the files look relevant, retrieve the full journal using:
