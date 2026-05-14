@@ -1,7 +1,3 @@
-param(
-    [string]$ParentDirectory = [Environment]::GetFolderPath("Desktop")
-)
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -84,21 +80,15 @@ function Invoke-Uv {
     Assert-LastCommandSucceeded -Command "uv $($Arguments -join ' ')"
 }
 
-if ([string]::IsNullOrWhiteSpace($ParentDirectory)) {
-    throw "ParentDirectory cannot be empty."
-}
-
-$resolvedParentDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ParentDirectory)
-if (-not (Test-Path -LiteralPath $resolvedParentDirectory -PathType Container)) {
-    throw "Parent directory does not exist: $resolvedParentDirectory"
-}
-
-$repoPath = Join-Path $resolvedParentDirectory "claude-template"
-$repoFolderAlreadyExisted = Test-Path -LiteralPath $repoPath
-
 Write-Host "Claude template Windows setup"
-Write-Host "Target parent folder: $resolvedParentDirectory"
-Write-Host "Repository folder: $repoPath"
+
+Invoke-Step `
+    -Purpose "Pull the latest changes from the remote repository." `
+    -Command "git pull" `
+    -Action {
+        git pull
+        Assert-LastCommandSucceeded -Command "git pull"
+    }
 
 Invoke-Step `
     -Purpose "Install uv, the Python package and tool manager used by this template." `
@@ -108,65 +98,6 @@ Invoke-Step `
         Assert-LastCommandSucceeded -Command 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"'
         Add-UvInstallPath
     }
-
-Invoke-Step `
-    -Purpose "Move into the folder where the template will be cloned." `
-    -Command "cd `"$resolvedParentDirectory`"" `
-    -Action {
-        Set-Location -LiteralPath $resolvedParentDirectory
-    }
-
-Invoke-Step `
-    -Purpose "Clone claude-template into the selected folder, or reuse an existing clone from an earlier run." `
-    -Command "git clone https://github.com/vela-wood/claude-template.git" `
-    -Action {
-        if (Test-Path -LiteralPath $repoPath) {
-            $originUrl = git -C $repoPath remote get-url origin 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                throw "Repository folder already exists but is not a usable Git clone: $repoPath"
-            }
-
-            $expectedOrigins = @(
-                "https://github.com/vela-wood/claude-template.git",
-                "git@github.com:vela-wood/claude-template.git"
-            )
-            if ($originUrl -notin $expectedOrigins) {
-                throw "Repository folder already exists with unexpected origin '$originUrl': $repoPath"
-            }
-
-            Write-Host "Repository folder already exists; reusing it."
-            return
-        }
-
-        git clone https://github.com/vela-wood/claude-template.git
-        Assert-LastCommandSucceeded -Command "git clone https://github.com/vela-wood/claude-template.git"
-    }
-
-Invoke-Step `
-    -Purpose "Enter the cloned claude-template repository." `
-    -Command "cd claude-template" `
-    -Action {
-        Set-Location -LiteralPath $repoPath
-    }
-
-Invoke-Step `
-    -Purpose "Switch the template to the Windows branch." `
-    -Command "git checkout windows" `
-    -Action {
-        git checkout windows
-        Assert-LastCommandSucceeded -Command "git checkout windows"
-    }
-
-if ($repoFolderAlreadyExisted) {
-    Invoke-Step `
-        -Purpose "Pull the latest Windows branch because this setup is reusing an existing clone." `
-        -Command "git pull" `
-        -Action {
-            Set-Location -LiteralPath $repoPath
-            git pull
-            Assert-LastCommandSucceeded -Command "git pull"
-        }
-}
 
 Invoke-Step `
     -Purpose "Install the template dependencies into its uv-managed environment." `
@@ -184,4 +115,3 @@ Invoke-Step `
 
 Write-Host ""
 Write-Host "Install completed. Please run uv run setup_claude.py for caption integration." -ForegroundColor Green
-Write-Host "Repository folder: $repoPath"
