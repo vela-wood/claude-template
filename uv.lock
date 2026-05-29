@@ -8,8 +8,8 @@ resolution-markers = [
 
 [[package]]
 name = "adeu"
-version = "1.4.3"
-source = { git = "https://github.com/dealfluence/adeu.git?rev=7289c3228795c9bc469628aafcbc4eee96a98dc3#7289c3228795c9bc469628aafcbc4eee96a98dc3" }
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diff-match-patch" },
     { name = "fastmcp", extra = ["apps"] },
@@ -19,7 +19,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-docx" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "rapidfuzz" },
     { name = "structlog" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/72/95/2651a693d2995364678df142cda698226bf5ea2311da1335d267bf01a6a8/adeu-1.8.0.tar.gz", hash = "sha256:2501a6508b9534e93dd81594896f286138d328464743a9ee0e080ad3d4df3b66", size = 367784, upload-time = "2026-05-26T13:02:11.379Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/44/404f01adc8a3d26416313f21602853c509aef34f71b42848d4c35de49e95/adeu-1.8.0-py3-none-any.whl", hash = "sha256:1ad7ee60b687f75f7f74c9ea3863446eb11e98e28af3d60f22d6c46dc8235416", size = 183604, upload-time = "2026-05-26T13:02:09.862Z" },
 ]
 
 [[package]]
@@ -230,7 +235,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-redline = [{ name = "adeu", git = "https://github.com/dealfluence/adeu.git?rev=7289c3228795c9bc469628aafcbc4eee96a98dc3" }]
+redline = [{ name = "adeu", specifier = "==1.8.0" }]
 
 [[package]]
 name = "click"

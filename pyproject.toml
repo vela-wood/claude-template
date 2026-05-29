@@ -22,7 +22,7 @@ netdocs = "netdocs.__main__:main"
 
 [dependency-groups]
 redline = [
-    "adeu @ git+https://github.com/dealfluence/adeu.git@7289c3228795c9bc469628aafcbc4eee96a98dc3",
+    "adeu==1.8.0",
 ]
 
 [tool.uv]
