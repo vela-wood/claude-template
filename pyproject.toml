@@ -22,7 +22,7 @@ netdocs = "netdocs.__main__:main"
 
 [dependency-groups]
 redline = [
-    "adeu==1.8.0",
+    "adeu==1.14.0",
 ]
 
 [tool.uv]

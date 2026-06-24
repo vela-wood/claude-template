@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "adeu"
-version = "1.8.0"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diff-match-patch" },
@@ -22,9 +22,9 @@ dependencies = [
     { name = "rapidfuzz" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/95/2651a693d2995364678df142cda698226bf5ea2311da1335d267bf01a6a8/adeu-1.8.0.tar.gz", hash = "sha256:2501a6508b9534e93dd81594896f286138d328464743a9ee0e080ad3d4df3b66", size = 367784, upload-time = "2026-05-26T13:02:11.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/d7/0d2951ca5bcff5312a56a40d0bdaea28cab6c56aae01f5662cbe3dcf42cc/adeu-1.14.0.tar.gz", hash = "sha256:a32941488fbcf9103b39185971526ce9f641c405a4c5f849ff57efe45ff760b9", size = 404228, upload-time = "2026-06-24T09:52:49.09Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/44/404f01adc8a3d26416313f21602853c509aef34f71b42848d4c35de49e95/adeu-1.8.0-py3-none-any.whl", hash = "sha256:1ad7ee60b687f75f7f74c9ea3863446eb11e98e28af3d60f22d6c46dc8235416", size = 183604, upload-time = "2026-05-26T13:02:09.862Z" },
+    { url = "https://files.pythonhosted.org/packages/94/2c/68b29d4a49432fc89c14522dcdb54e9e61ff48b9bedcdd967b0875ebb418/adeu-1.14.0-py3-none-any.whl", hash = "sha256:3cb7edd949f61e6b0002cd420504468142c8ed381645df038cfe7b305eddf452", size = 199600, upload-time = "2026-06-24T09:52:47.629Z" },
 ]
 
 [[package]]
@@ -235,7 +235,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-redline = [{ name = "adeu", specifier = "==1.8.0" }]
+redline = [{ name = "adeu", specifier = "==1.14.0" }]
 
 [[package]]
 name = "click"
