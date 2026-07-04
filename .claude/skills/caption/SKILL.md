@@ -114,10 +114,10 @@ caption edit_project <project-uuid> --name "Renamed" --dry-run
 **Fast path — "last" / "most recent" / "latest" transcript.** When the user asks about their last/most recent/latest recording (any variant), do NOT run `list_projects` + `dl_transcript`. Use a bounded `tail` instead: with no `transcript_id`, `tail` targets the transcript of the most recently updated project, backfills the entire transcript so far, then exits at the idle bound:
 
 ```bash
-caption tail --idle-timeout 5 >> caption_cache/tail_latest.txt
+caption tail --idle-timeout 2 >> caption_cache/tail_latest.txt
 ```
 
-Run it in the background (Bash `run_in_background`), wait for it to exit, then read/summarize `caption_cache/tail_latest.txt`. The short `--idle-timeout` makes this a quick one-shot fetch when the recording is finished; if the meeting turns out to be live and the user wants to follow it, restart with `--idle-timeout 300` per workflow 6. Note `tail` output has no project name/UUID metadata — only fetch those (via `list_projects`) if the user asks.
+Run it in the background (Bash `run_in_background`), wait for it to exit, then read/summarize `caption_cache/tail_latest.txt`. The short `--idle-timeout` makes this a quick one-shot fetch when the recording is finished; if the meeting turns out to be live and the user wants to follow it, restart with `--idle-timeout 600` per workflow 6. Note `tail` output has no project name/UUID metadata — only fetch those (via `list_projects`) if the user asks.
 
 **By-name / by-UUID path.** When the user names a specific meeting or an older transcript, resolve the transcript UUID via `list_projects` and download it:
 
@@ -145,7 +145,7 @@ caption rename_speaker <project-uuid> <speaker-uuid> --name "Alice"
 
 ```bash
 caption tail >> caption_cache/tail_live.txt
-caption tail <transcript-uuid> --idle-timeout 300 >> caption_cache/tail_<slug>.txt
+caption tail <transcript-uuid> --idle-timeout 600 >> caption_cache/tail_<slug>.txt
 ```
 
 Rules:
