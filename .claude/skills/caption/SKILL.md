@@ -1,6 +1,6 @@
 ---
 name: caption
-description: Operates the Caption CLI. Use when users ask about transcripts of their conversations.
+description: Operates the Caption CLI. Use when users ask about transcriptions of conversations and meetings.
 ---
 
 # Caption CLI Skill
@@ -111,6 +111,16 @@ caption edit_project <project-uuid> --name "Renamed" --dry-run
 
 ### 4) Transcript export (haiku subagent downloads; sonnet summarizes)
 
+**Fast path — "last" / "most recent" / "latest" transcript.** When the user asks about their last/most recent/latest recording (any variant), do NOT run `list_projects` + `dl_transcript`. Use a bounded `tail` instead: with no `transcript_id`, `tail` targets the transcript of the most recently updated project, backfills the entire transcript so far, then exits at the idle bound:
+
+```bash
+caption tail --idle-timeout 5 >> caption_cache/tail_latest.txt
+```
+
+Run it in the background (Bash `run_in_background`), wait for it to exit, then read/summarize `caption_cache/tail_latest.txt`. The short `--idle-timeout` makes this a quick one-shot fetch when the recording is finished; if the meeting turns out to be live and the user wants to follow it, restart with `--idle-timeout 300` per workflow 6. Note `tail` output has no project name/UUID metadata — only fetch those (via `list_projects`) if the user asks.
+
+**By-name / by-UUID path.** When the user names a specific meeting or an older transcript, resolve the transcript UUID via `list_projects` and download it:
+
 ```bash
 caption --output-file caption_cache/transcript_<uuid>.md dl_transcript <transcript-uuid>
 ```
@@ -128,11 +138,10 @@ caption rename_speaker <project-uuid> <speaker-uuid> --name "Alice"
 - Prefer `--name` over `--speaker-id` (the API does not ownership-check speaker IDs across projects).
 - Omitting `--index` updates all diarization indexes in the channel.
 - `--project-id` fans out over every transcript in the project - confirm with the user first.
-- Only custom speakers can be renamed; user-backed speakers are rejected.
 
 ### 6) Live transcription with `tail` (main thread, ALWAYS in the background)
 
-`caption tail` streams finalized captions for one transcript in real time. It first prints the entire transcript so far, then - if transcription is still in progress - keeps appending new captions as they arrive. This lets the user interact with a live meeting transcription from inside a Claude session.
+`caption tail` streams one transcript in real time. It first prints the entire transcript so far, then - if transcription is still in progress - keeps appending new captions as they arrive. This lets the user interact with a live meeting transcription from inside a Claude session.
 
 ```bash
 caption tail >> caption_cache/tail_live.txt
@@ -146,10 +155,10 @@ Rules:
 - To answer questions about the meeting, read the cache file (`tail -n 50 caption_cache/tail_live.txt`, `grep`, etc.) rather than waiting on the stream. Re-read it whenever the user asks about the latest discussion.
 - Output lines are fixed format `{channel}-{index}: {content}` (e.g., `microphone-1: We should ship on Friday.`); timestamps and IDs are stripped. Diagnostics and deleted-caption notices go to stderr.
 - Bound the stream when scripting: `--duration N`, `--max-events N`, or `--idle-timeout N` (recommended: `--idle-timeout 300` so the process exits ~5 minutes after the meeting goes quiet). An unbounded tail runs until killed.
+- A tightly bounded tail (`--idle-timeout 5`) doubles as a one-shot fetch of the latest transcript — see the fast path in workflow 4.
 - During reconnect/backfill, output is deduped by caption ID but not guaranteed to be in `createdAt` order.
 - `tail` keeps following the same transcript even if a new session starts; restart it to switch to a newer transcript.
 - Needs `CAPTION_API_URL` and `CLERK_API_KEY` (or `--clerk-api-key`).
-
 
 
 ## Critical constraints
@@ -185,7 +194,8 @@ See `references/command_contracts.md` for the command map and `references/error_
 | `list_projects` / `list_folders` | List workspace projects (transcripts) / folders | haiku |
 | `create_project` / `create_folder` | Create project / folder | main thread |
 | `edit_project` / `edit_folder` | Patch project / folder | main thread |
-| `dl_transcript <transcript-uuid>` | Download transcript captions | haiku (dl), sonnet (summarize) |
+| `dl_transcript <transcript-uuid>` | Download a specific transcript by UUID | haiku (dl), sonnet (summarize) |
+| `tail --idle-timeout 5` | One-shot fetch of the LATEST transcript ("last"/"most recent") | main thread, background task |
 | `tail [transcript-uuid]` | Stream live captions (backfills full transcript, then follows) | main thread, background task only |
 | `list_speakers <transcript-uuid>` | Map channel/index/speaker groups | haiku |
 | `assign_speakers` / `rename_speaker` | Speaker mutations | main thread |
