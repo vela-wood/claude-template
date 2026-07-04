@@ -47,6 +47,7 @@ Global flags (before the subcommand):
 
 ### Transcripts and speakers (needs CAPTION_API_URL, CLERK_API_KEY)
 - `dl_transcript <transcript_id> [--timestamp]` - timestamps stripped by default
+- `tail [transcript_id] [--duration SECS] [--max-events N] [--idle-timeout SECS] [--clerk-api-key TOKEN]` - streams finalized captions (full backfill, then follows live); omitted ID = transcript of most recently updated project; plain output `{channel}-{index}: {content}`, diagnostics on stderr; run in background with stdout redirected to `caption_cache/`
 - `list_speakers <transcript_id>` - derives (channel, index, speakerId) groups; speaker IDs only, no names
 - `assign_speakers (--transcript-id|--project-id) --channel {0|1|2|microphone|loopback|external} [--index N] (--speaker-id|--name) [--dry-run]` - prefer `--name`; omitting `--index` hits all indexes in the channel; `--project-id` fans out over all project transcripts
 - `rename_speaker <project_id> <speaker_id> --name TEXT [--dry-run]` - custom speakers only

@@ -130,12 +130,33 @@ caption rename_speaker <project-uuid> <speaker-uuid> --name "Alice"
 - `--project-id` fans out over every transcript in the project - confirm with the user first.
 - Only custom speakers can be renamed; user-backed speakers are rejected.
 
+### 6) Live transcription with `tail` (main thread, ALWAYS in the background)
+
+`caption tail` streams finalized captions for one transcript in real time. It first prints the entire transcript so far, then - if transcription is still in progress - keeps appending new captions as they arrive. This lets the user interact with a live meeting transcription from inside a Claude session.
+
+```bash
+caption tail >> caption_cache/tail_live.txt
+caption tail <transcript-uuid> --idle-timeout 300 >> caption_cache/tail_<slug>.txt
+```
+
+Rules:
+
+- ALWAYS run `tail` as a background task (e.g., Bash `run_in_background`) with stdout appended to a `caption_cache/` file. Never run it in the foreground - it blocks until interrupted or a bound is hit.
+- Omit `transcript_id` to tail the transcript attached to the most recently updated project (the usual case: "tail my current meeting"). Pass a UUID to pin a specific transcript.
+- To answer questions about the meeting, read the cache file (`tail -n 50 caption_cache/tail_live.txt`, `grep`, etc.) rather than waiting on the stream. Re-read it whenever the user asks about the latest discussion.
+- Output lines are fixed format `{channel}-{index}: {content}` (e.g., `microphone-1: We should ship on Friday.`); timestamps and IDs are stripped. Diagnostics and deleted-caption notices go to stderr.
+- Bound the stream when scripting: `--duration N`, `--max-events N`, or `--idle-timeout N` (recommended: `--idle-timeout 300` so the process exits ~5 minutes after the meeting goes quiet). An unbounded tail runs until killed.
+- During reconnect/backfill, output is deduped by caption ID but not guaranteed to be in `createdAt` order.
+- `tail` keeps following the same transcript even if a new session starts; restart it to switch to a newer transcript.
+- Needs `CAPTION_API_URL` and `CLERK_API_KEY` (or `--clerk-api-key`).
+
 
 
 ## Critical constraints
 
 - Always use the global `caption` command directly; global flags (`--output`, `--output-file`, `--env-file`, `--cache-path`) go before the subcommand.
 - `dl_transcript` ALWAYS takes a transcript UUID. Projects and transcripts are currently 1:1, but they have distinct UUIDs.
+- `tail` is a long-running stream: ALWAYS run it in the background with stdout redirected to `caption_cache/`, never in the foreground.
 - Users refer to "meetings", "recordings", "transcripts", and "projects" interchangeably. "Edit/create a transcript" means the project containing it - the CLI cannot edit lines inside transcripts.
 - `list_projects` != `list_matters` (workspace API vs hosted history server).
 - Reference `caption_cache/` before re-requesting anything.
@@ -165,6 +186,7 @@ See `references/command_contracts.md` for the command map and `references/error_
 | `create_project` / `create_folder` | Create project / folder | main thread |
 | `edit_project` / `edit_folder` | Patch project / folder | main thread |
 | `dl_transcript <transcript-uuid>` | Download transcript captions | haiku (dl), sonnet (summarize) |
+| `tail [transcript-uuid]` | Stream live captions (backfills full transcript, then follows) | main thread, background task only |
 | `list_speakers <transcript-uuid>` | Map channel/index/speaker groups | haiku |
 | `assign_speakers` / `rename_speaker` | Speaker mutations | main thread |
 | `list_matters` | List hosted-history matters | haiku |
