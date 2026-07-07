@@ -12,8 +12,8 @@ File verdict = majority of pages (scan classes win ties). Files whose
 verdict is "scanned-image-only" or "mixed/other" need OCR before text
 conversion will produce anything useful.
 
-Importable API: classify_pdf(), PdfClassification, load/save_class_index().
-CLI: uv run pdf_classifier.py [root] [-o output.csv]
+Importable API: classify_pdf(), PdfClassification, load/save_ocr_index().
+CLI: uv run pdfcheck.py [root] [-o output.csv]
 """
 
 import argparse
@@ -25,7 +25,7 @@ import fitz
 
 fitz.TOOLS.mupdf_display_errors(False)
 
-PDF_CLASS_INDEX_FILENAME = ".pdf_class_index.csv"
+OCR_INDEX_FILENAME = ".ocr_index.csv"
 NEEDS_OCR_VERDICTS = {"scanned-image-only", "mixed/other"}
 _FULL_PAGE_IMAGE_COVERAGE = 0.8
 _MIN_TEXT_CHARS = 20
@@ -102,14 +102,13 @@ _INDEX_COLUMNS = [
     "pg_digital",
     "pg_other",
     "verdict",
-    "needs_ocr",
     "producer",
 ]
 
 
-def load_class_index(root: Path) -> dict[str, dict[str, str]]:
-    """Load .pdf_class_index.csv → {pdf_relative_path: row dict}."""
-    index_path = root / PDF_CLASS_INDEX_FILENAME
+def load_ocr_index(root: Path) -> dict[str, dict[str, str]]:
+    """Load .ocr_index.csv → {pdf_relative_path: row dict}."""
+    index_path = root / OCR_INDEX_FILENAME
     index: dict[str, dict[str, str]] = {}
     if not index_path.exists():
         return index
@@ -119,11 +118,11 @@ def load_class_index(root: Path) -> dict[str, dict[str, str]]:
     return index
 
 
-def save_class_index(root: Path, index: dict[str, dict[str, str]]) -> None:
-    """Write .pdf_class_index.csv from {pdf_relative_path: row dict}."""
-    index_path = root / PDF_CLASS_INDEX_FILENAME
+def save_ocr_index(root: Path, index: dict[str, dict[str, str]]) -> None:
+    """Write .ocr_index.csv from {pdf_relative_path: row dict}."""
+    index_path = root / OCR_INDEX_FILENAME
     with open(index_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_INDEX_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=_INDEX_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         for rel_path in sorted(index):
             writer.writerow(index[rel_path])
@@ -140,7 +139,6 @@ def index_row(rel: str, file_hash: str, c: PdfClassification) -> dict[str, str]:
         "pg_digital": str(c.pg_digital),
         "pg_other": str(c.pg_other),
         "verdict": c.verdict,
-        "needs_ocr": str(c.needs_ocr),
         "producer": c.producer[:80],
     }
 
@@ -156,13 +154,18 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="write per-file CSV here")
     args = parser.parse_args()
 
+    # Lazy import: startup.py imports this module at top level, so importing
+    # startup here (not at module scope) avoids a circular import.
+    from startup import hash_file
+
     root = Path(args.root)
     rows = []
-    counts: dict[str, int] = {}
+    total = 0
     for pdf in sorted(root.rglob("*.pdf")):
         c = classify_pdf(pdf)
-        rows.append(index_row(str(pdf.relative_to(root)), "", c))
-        counts[c.verdict] = counts.get(c.verdict, 0) + 1
+        total += 1
+        if c.needs_ocr:
+            rows.append(index_row(str(pdf.relative_to(root)), hash_file(pdf), c))
 
     if args.output:
         with open(args.output, "w", newline="") as f:
@@ -170,11 +173,9 @@ def main() -> None:
             writer.writeheader()
             writer.writerows(rows)
 
-    needs = sum(1 for r in rows if r["needs_ocr"] == "True")
-    print("Summary:")
-    for verdict, count in sorted(counts.items(), key=lambda kv: -kv[1]):
-        print(f"  {verdict}: {count}")
-    print(f"  needs_ocr: {needs} of {len(rows)}")
+    for row in rows:
+        print(f"{row['file']}: {row['verdict']}")
+    print(f"{len(rows)} of {total} PDFs need OCR")
 
 
 if __name__ == "__main__":
