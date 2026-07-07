@@ -10,6 +10,13 @@ from pathlib import Path
 import tiktoken
 
 from netdocs.env import load_repo_dotenv
+from pdf_classifier import (
+    PDF_CLASS_INDEX_FILENAME,
+    classify_pdf,
+    index_row,
+    load_class_index,
+    save_class_index,
+)
 
 load_repo_dotenv(__file__)
 
@@ -204,6 +211,44 @@ def convert_files(
 
 
 # ---------------------------------------------------------------------------
+# PDF classification (scanned vs digital → needs_ocr)
+# ---------------------------------------------------------------------------
+
+
+def classify_pdfs(
+    root: Path,
+    sources: list[Path],
+    hashes: dict[str, str],
+    class_index: dict[str, dict[str, str]],
+) -> None:
+    """Classify new/changed PDFs and update class_index in-place.
+
+    Files verdicted scanned-image-only or mixed/other get needs_ocr=True;
+    markitdown conversion will produce nothing useful for those.
+    """
+    pdf_rels = [
+        str(src.relative_to(root)) for src in sources if src.suffix.lower() == ".pdf"
+    ]
+    to_classify = [
+        rel
+        for rel in pdf_rels
+        if rel in hashes and class_index.get(rel, {}).get("hash") != hashes[rel]
+    ]
+
+    if to_classify:
+        print(f"\nClassifying {len(to_classify)} PDF(s) (scanned vs digital)...")
+        for rel in to_classify:
+            result = classify_pdf(root / rel)
+            class_index[rel] = index_row(rel, hashes[rel], result)
+            if result.needs_ocr:
+                print(f"\t{rel}: {result.verdict} -> needs_ocr")
+
+    current = set(pdf_rels)
+    for rel in [rel for rel in class_index if rel not in current]:
+        del class_index[rel]
+
+
+# ---------------------------------------------------------------------------
 # Token indexing
 # ---------------------------------------------------------------------------
 
@@ -278,6 +323,7 @@ def main():
     # 1. Load existing indices
     hash_index = load_hash_index(root)
     token_index = load_token_index(root)
+    class_index = load_class_index(root)
 
     # 2. Discover source files (skip dot-prefixed directories and temp files)
     def _eligible_source(p: Path) -> bool:
@@ -315,17 +361,20 @@ def main():
             except Exception as exc:
                 print(f"\tERROR hashing {rel}: {exc}")
 
-    # 4. Convert files with changed/new hashes
+    # 4. Classify new/changed PDFs (flags needs_ocr in .pdf_class_index.csv)
+    classify_pdfs(root, sources, hashes, class_index)
+
+    # 5. Convert files with changed/new hashes
     converted_rels = convert_files(root, sources, hashes, hash_index, DEFAULT_DOCX_CONVERTER)
 
-    # 5. Update hash index for all current files
+    # 6. Update hash index for all current files
     for rel, h in hashes.items():
         hash_index[rel] = h
 
-    # 6. Count tokens for new/changed converted files
+    # 7. Count tokens for new/changed converted files
     index_tokens(root, hashes, token_index, converted_rels, DEFAULT_DOCX_CONVERTER)
 
-    # 7. Prune stale entries
+    # 8. Prune stale entries
     stale_hash = [rel for rel in hash_index if rel not in hashes]
     for rel in stale_hash:
         del hash_index[rel]
@@ -341,16 +390,19 @@ def main():
     for rel in stale_token:
         del token_index[rel]
 
-    # 8. Save indices
+    # 9. Save indices
     save_hash_index(root, hash_index)
     save_token_index(root, token_index)
+    save_class_index(root, class_index)
 
-    # 9. Summary
+    # 10. Summary
     total_tokens = sum(token_index.values())
     skipped = len(sources) - len(converted_rels)
+    needs_ocr = sum(1 for row in class_index.values() if row["needs_ocr"] == "True")
     print(f"\nDone. {len(sources)} office documents indexed, {len(converted_rels)} converted, {skipped} unchanged.")
+    print(f"PDFs classified: {len(class_index)}, of which {needs_ocr} flagged needs_ocr.")
     print(f"Total tokens across converted files: {total_tokens:,}")
-    print(f"Indices written to {HASH_INDEX_FILENAME} and {TOKEN_INDEX_FILENAME}")
+    print(f"Indices written to {HASH_INDEX_FILENAME}, {TOKEN_INDEX_FILENAME}, and {PDF_CLASS_INDEX_FILENAME}")
 
 
 if __name__ == "__main__":
