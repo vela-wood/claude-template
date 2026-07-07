@@ -103,6 +103,7 @@ _INDEX_COLUMNS = [
     "pg_other",
     "verdict",
     "producer",
+    "ocr_done",
 ]
 
 
@@ -114,6 +115,7 @@ def load_ocr_index(root: Path) -> dict[str, dict[str, str]]:
         return index
     with open(index_path, newline="") as f:
         for row in csv.DictReader(f):
+            row["ocr_done"] = row.get("ocr_done") or ""
             index[row["file"]] = row
     return index
 
@@ -140,6 +142,7 @@ def index_row(rel: str, file_hash: str, c: PdfClassification) -> dict[str, str]:
         "pg_other": str(c.pg_other),
         "verdict": c.verdict,
         "producer": c.producer[:80],
+        "ocr_done": "",
     }
 
 
