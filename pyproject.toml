@@ -23,7 +23,9 @@ netdocs = "netdocs.__main__:main"
 
 [dependency-groups]
 redline = [
-    "adeu==1.14.0",
+    # Slim fork of dealfluence/adeu: fastmcp moved to an optional extra,
+    # dropping ~20 MCP-server packages the CLI never uses.
+    "adeu",
 ]
 compare = [
     "python-redlines[docxodus]>=0.2.1",
@@ -32,6 +34,9 @@ compare = [
 [tool.uv]
 package = true
 default-groups = ["redline", "compare"]
+
+[tool.uv.sources]
+adeu = { git = "https://github.com/vela-wood/adeu.git", tag = "v1.19.0-slim", subdirectory = "python" }
 
 [tool.setuptools.packages.find]
 include = ["netdocs*"]
