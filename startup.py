@@ -1,11 +1,13 @@
 import argparse
 import csv
+import json
 import os
 import shutil
 import subprocess
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 import tiktoken
 
@@ -72,11 +74,6 @@ def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -
     if suffix == ".docx":
         return source.parent / f"{source.name}.md"
     raise ValueError(f"Unsupported source type: {source}")
-
-
-def ocr_output_path(source: Path) -> Path:
-    """Return the focr output path for a PDF (foo.pdf -> foo.pdf.ocr.md)."""
-    return source.parent / f"{source.name}.ocr.md"
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +172,15 @@ def convert_files(
     hashes: dict[str, str],
     hash_index: dict[str, str],
     docx_converter: str,
+    skip_rels: set[str] | None = None,
 ) -> list[str]:
     """Convert source files whose hash is new or changed. Returns list of native relative paths that were converted."""
+    skip_rels = skip_rels or set()
     to_convert: list[Path] = []
     for src in sources:
         rel = str(src.relative_to(root))
+        if rel in skip_rels:
+            continue
         old_hash = hash_index.get(rel)
         out = converted_path(src, docx_converter)
         if old_hash is None or old_hash != hashes[rel] or not out.exists():
@@ -262,34 +263,82 @@ def classify_pdfs(
 _OCR_RASTER_DPI = 150
 
 
-def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> None:
+def pending_ocr_rels(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
+    """Return PDFs that are flagged for OCR and do not have current OCR output."""
+    return [
+        rel
+        for rel, row in sorted(ocr_index.items())
+        if row["verdict"] in NEEDS_OCR_VERDICTS
+        and not (
+            row.get("ocr_done") == "true"
+            and converted_path(root / rel, DEFAULT_DOCX_CONVERTER).exists()
+        )
+    ]
+
+
+def _parse_focr_batch_results(stdout: str) -> dict[str, dict[str, Any]]:
+    """Parse focr ocr-batch JSON from wrapper, array, or NDJSON output."""
+
+    def records_from_payload(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+            return [r for r in payload["results"] if isinstance(r, dict)]
+        if isinstance(payload, dict) and isinstance(payload.get("image"), str):
+            return [payload]
+        if isinstance(payload, list):
+            return [r for r in payload if isinstance(r, dict)]
+        return []
+
+    text = stdout.strip()
+    if not text:
+        raise ValueError("empty stdout from focr")
+
+    payloads: list[Any] = []
+    try:
+        payloads.append(json.loads(text))
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                payloads.append(json.loads(line))
+
+    records = [
+        record
+        for payload in payloads
+        for record in records_from_payload(payload)
+    ]
+    results = {
+        record["image"]: record
+        for record in records
+        if isinstance(record.get("image"), str)
+    }
+    if not results:
+        raise ValueError("no per-image results in focr JSON")
+    return results
+
+
+def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
     """Run focr on PDFs flagged needs_ocr that lack a successful conversion.
 
     All pages of all pending PDFs are rasterized to a temp dir and fed to a
     single `focr ocr-batch` invocation, so the multi-GB model is loaded once
     for the whole run instead of once per file. Per-PDF output is written to
-    foo.pdf.ocr.md (pages joined with a blank line, matching focr's native
+    foo.pdf.md (pages joined with a blank line, matching focr's native
     PDF handling), and ocr_done is set only when every page of a PDF OCRed
     successfully.
 
-    A row is skipped when ocr_done == "true" and its .ocr.md output still
+    A row is skipped when ocr_done == "true" and its converted markdown still
     exists; classify_pdfs() resets ocr_done whenever a PDF's hash changes,
     so changed files are re-OCRed automatically. Updates ocr_index in-place.
     """
-    import json
     import tempfile
 
     import fitz
 
-    to_ocr = [
-        rel
-        for rel, row in sorted(ocr_index.items())
-        if row["verdict"] in NEEDS_OCR_VERDICTS
-        and not (row.get("ocr_done") == "true" and ocr_output_path(root / rel).exists())
-    ]
+    converted_rels: list[str] = []
+    to_ocr = pending_ocr_rels(root, ocr_index)
     if not to_ocr:
         print("\nOCR: nothing to do (all flagged PDFs already converted).")
-        return
+        return converted_rels
 
     print(f"\nOCRing {len(to_ocr)} PDF(s) with focr (one batched model load)...")
     with tempfile.TemporaryDirectory(prefix="focr-batch-") as tmp:
@@ -316,24 +365,32 @@ def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> None:
 
         page_paths = [p for paths in pages_by_rel.values() for p in paths]
         if not page_paths:
-            return
+            return converted_rels
         print(f"\tRasterized {len(page_paths)} page(s) from {len(pages_by_rel)} PDF(s); running focr ocr-batch...")
 
         # 2. One focr process for the whole batch. stderr passes through so
         # focr's per-page progress stays visible; stdout carries the JSON.
-        proc = subprocess.run(
-            ["focr", "ocr-batch", *map(str, page_paths), "--json"],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                ["focr", "ocr-batch", *map(str, page_paths), "--json"],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            print(
+                "\tERROR: focr command not found. Install Franken OCR from "
+                "https://github.com/Dicklesworthstone/franken_ocr and make sure "
+                "`focr` is on PATH."
+            )
+            return converted_rels
         if proc.returncode != 0:
             print(f"\tERROR: focr ocr-batch exited {proc.returncode}")
-            return
+            return converted_rels
         try:
-            results = {r["image"]: r for r in json.loads(proc.stdout)["results"]}
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            results = _parse_focr_batch_results(proc.stdout)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
             print(f"\tERROR parsing focr ocr-batch JSON: {exc}")
-            return
+            return converted_rels
 
         # 3. Reassemble per-PDF markdown; mark done only on full success.
         for rel, paths in pages_by_rel.items():
@@ -349,10 +406,12 @@ def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> None:
             if failed:
                 print(f"\tERROR OCRing {rel} ({len(failed)}/{len(paths)} page(s) failed): {failed[0]}")
                 continue
-            out = ocr_output_path(root / rel)
+            out = converted_path(root / rel, DEFAULT_DOCX_CONVERTER)
             out.write_text("\n\n".join(page_md), encoding="utf-8")
             ocr_index[rel]["ocr_done"] = "true"
+            converted_rels.append(rel)
             print(f"\t{rel} -> {out.name}")
+    return converted_rels
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +469,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ocr",
         action="store_true",
-        help="run focr on PDFs flagged needs_ocr (writes foo.pdf.ocr.md, tracked in "
+        help="run focr on PDFs flagged needs_ocr (writes foo.pdf.md, tracked in "
         f"{OCR_INDEX_FILENAME})",
     )
     return parser.parse_args()
@@ -476,13 +535,28 @@ def main():
 
     # 4. Classify new/changed PDFs (flags needs_ocr in .ocr_index.csv)
     classify_pdfs(root, sources, hashes, ocr_index)
+    pending_ocr = pending_ocr_rels(root, ocr_index)
+    print(f"\nDocuments that may need OCR: {len(pending_ocr)}")
+    for rel in pending_ocr:
+        print(f"\t{rel}")
+    if pending_ocr and not args.ocr:
+        print("\tAsk the user before running `uv run startup.py --ocr`; OCR can take a long time.")
 
     # 4b. With --ocr, run focr on flagged PDFs not yet successfully converted
+    ocr_converted_rels: list[str] = []
     if args.ocr:
-        run_ocr(root, ocr_index)
+        ocr_converted_rels = run_ocr(root, ocr_index)
 
     # 5. Convert files with changed/new hashes
-    converted_rels = convert_files(root, sources, hashes, hash_index, DEFAULT_DOCX_CONVERTER)
+    converted_rels = convert_files(
+        root,
+        sources,
+        hashes,
+        hash_index,
+        DEFAULT_DOCX_CONVERTER,
+        skip_rels=set(ocr_converted_rels),
+    )
+    converted_rels.extend(ocr_converted_rels)
 
     # 6. Update hash index for all current files
     for rel, h in hashes.items():

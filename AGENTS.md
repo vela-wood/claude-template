@@ -23,6 +23,7 @@ Always run the tasks below before proceeding to the main task:
 
 1. **Convert files to markdown**
    - Use `uv run startup.py` 
+   - Do not run `uv run startup.py --ocr` without first asking the user. OCR can take a long time.
 
 Then proceed to the main task.
 
@@ -41,7 +42,12 @@ Then proceed to the main task.
 - `.pdf` → `.pdf.md`
 - `.docx` → `.docx.md`
 
-It outputs `.hash_index.csv` (file hashes for change detection) and `.token_index.csv` (token counts per converted file).
+It outputs:
+- `.hash_index.csv` (file hashes for change detection)
+- `.token_index.csv` (token counts per converted file)
+- `.ocr_index.csv` (PDF OCR classification and status, including `verdict` and `ocr_done`)
+
+It also reports any PDFs that may need OCR. If OCR is needed, ask the user before running `uv run startup.py --ocr`.
 
 Procedure:
 1. **Preferred input = already-converted file**

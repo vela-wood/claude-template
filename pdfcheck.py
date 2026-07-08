@@ -164,7 +164,10 @@ def main() -> None:
     root = Path(args.root)
     rows = []
     total = 0
-    for pdf in sorted(root.rglob("*.pdf")):
+    for pdf in sorted(
+        p for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() == ".pdf"
+    ):
         c = classify_pdf(pdf)
         total += 1
         if c.needs_ocr:
