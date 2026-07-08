@@ -217,6 +217,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+compare = [
+    { name = "python-redlines", extra = ["docxodus"] },
+]
 redline = [
     { name = "adeu" },
 ]
@@ -237,6 +240,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+compare = [{ name = "python-redlines", extras = ["docxodus"], specifier = ">=0.2.1" }]
 redline = [{ name = "adeu", specifier = "==1.14.0" }]
 
 [[package]]
@@ -1295,6 +1299,36 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/52/a9/0c0db8d37b2b8a645666f7fd8accea4c6224e013c42b1d5c17c93590cd06/python_pptx-1.0.2.tar.gz", hash = "sha256:479a8af0eaf0f0d76b6f00b0887732874ad2e3188230315290cd1f9dd9cc7095", size = 10109297, upload-time = "2024-08-07T17:33:37.772Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl", hash = "sha256:160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba", size = 472788, upload-time = "2024-08-07T17:33:28.192Z" },
+]
+
+[[package]]
+name = "python-redlines"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "platformdirs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f9/07/59d207e590e53085c2d67d78c3bf0f36ac565efa966cbf826acac5d2e296/python_redlines-0.2.1.tar.gz", hash = "sha256:bc1dd7d17205449b5dd6b1fa466d1b3b851d700024d9c9bef45bcaa80168c08d", size = 6682, upload-time = "2026-05-23T02:59:30.241Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/24/2184fb50824d95dd95df273304e92dba7c2858fc869b68ce6cb7e9228279/python_redlines-0.2.1-py3-none-any.whl", hash = "sha256:0df91342e3e7e23b858b8770c1c1e465fc27d62a98729c9b1d094b097b92b7eb", size = 5559, upload-time = "2026-05-23T02:58:47.749Z" },
+]
+
+[package.optional-dependencies]
+docxodus = [
+    { name = "python-redlines-docxodus" },
+]
+
+[[package]]
+name = "python-redlines-docxodus"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/9d/9c785f37b0d818ae506610d11a795c09c4fc1d1f674887b64bffc6260f92/python_redlines_docxodus-0.2.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:390607271dd9c9796690594273eec5bf6bb62ff43c827bb450493005a9eea68f", size = 39482050, upload-time = "2026-05-23T02:58:49.906Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/12/23b01fff4ad27daab001214c6b3bf4112741aed0843712cfa323125b1459/python_redlines_docxodus-0.2.1-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:7a4968b007d97de192b0f400e57e138c44361427520c4af4f2be8c8bb99079e5", size = 41112719, upload-time = "2026-05-23T02:58:53.189Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/1d/f95fe5746ab75dbb92970b5b5005869ad297638be02cd52c2bc90ca9029f/python_redlines_docxodus-0.2.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:6fd9258a3c854ccfa46d8ca90273471b43a683595c71c4a1be7e7d825d69fe11", size = 36848434, upload-time = "2026-05-23T02:58:56.728Z" },
+    { url = "https://files.pythonhosted.org/packages/15/f6/670d22e081d3b91c224dd81dc09cbdea6aaf27ebcfb6e5f6631d5da7e264/python_redlines_docxodus-0.2.1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:49de1abcb1f3ebf403598746a44c8ad1fb9e7d22e6e7f625169b3a4659f2a6e7", size = 38649730, upload-time = "2026-05-23T02:59:01.289Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/c5/de6fca9e25eb1d5b4dcc3c6102c327d7f5687d976838efdb31b6b8b47346/python_redlines_docxodus-0.2.1-py3-none-win_amd64.whl", hash = "sha256:48a02a138c1b2ceaf0aa10e2ad5b64c9736354ffba98f9b33f236e20a184b241", size = 39821833, upload-time = "2026-05-23T02:59:04.597Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/43/34b78e1b08f2cdfebacde2a46fc6a7693c514642e9d767768b7c164c7a33/python_redlines_docxodus-0.2.1-py3-none-win_arm64.whl", hash = "sha256:5fdbf6bd1900c67d5db48110782c46e7d011b44f4e605250bf4bc76f88d1ca98", size = 38244957, upload-time = "2026-05-23T02:59:07.495Z" },
 ]
 
 [[package]]

@@ -25,10 +25,13 @@ netdocs = "netdocs.__main__:main"
 redline = [
     "adeu==1.14.0",
 ]
+compare = [
+    "python-redlines[docxodus]>=0.2.1",
+]
 
 [tool.uv]
 package = true
-default-groups = ["redline"]
+default-groups = ["redline", "compare"]
 
 [tool.setuptools.packages.find]
 include = ["netdocs*"]

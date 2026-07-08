@@ -1,6 +1,6 @@
 ---
 name: redline
-description: Use this skill for editing .docx files or comparing two .docx files
+description: Use this skill for editing .docx files with tracked edits, or for machine-readable diffs of two .docx files. For a human-consumable track-changes comparison .docx, use /compare instead.
 ---
 
 # Redline Skill
@@ -8,8 +8,10 @@ description: Use this skill for editing .docx files or comparing two .docx files
 ## Overview
 
 This skill runs Adeu from the repo-local environment. Use it when you need to:
-- compare two `.docx` versions
-- apply edits to a `.docx` file
+- apply edits to a `.docx` file (written out as Word track changes)
+- inspect the differences between two `.docx` versions as text/JSON
+
+Note: `adeu diff` outputs text/JSON only — it never produces a .docx. If the user wants a comparison document a human can open in Word with track changes, use the /compare skill instead.
 
 Never use this skill to create a new blank Word document from scratch.
 
