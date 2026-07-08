@@ -1,6 +1,6 @@
 ---
 name: compare
-description: Compare two .docx files and produce a Word-native track-changes .docx for human consumption (e.g., /compare original.docx revised.docx)
+description: Compare two .docx files and save a Word-native track-changes .docx for human use (e.g., /compare original.docx revised.docx)
 ---
 
 # Compare Skill

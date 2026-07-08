@@ -1,6 +1,6 @@
 ---
 name: redline
-description: Use this skill for editing .docx files with tracked edits, or for machine-readable diffs of two .docx files. For a human-consumable track-changes comparison .docx, use /compare instead.
+description: Use this skill for editing .docx files with tracked edits, or for machine-readable diffs of two .docx files. To generate track-changes comparison .docx, use /compare instead.
 ---
 
 # Redline Skill

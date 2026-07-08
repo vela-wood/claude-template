@@ -29,6 +29,13 @@ cd claude-template
 uv sync
 ```
 
+`uv sync` installs the default dependency groups:
+
+- `redline`: `adeu`, sourced from the slim `vela-wood/adeu` Git tag that keeps the DOCX editing CLI but drops unused MCP-server packages.
+- `compare`: `python-redlines[docxodus]`, used to produce Word-native track-changes comparison documents from two existing `.docx` files.
+
+These dependency groups are not Windows-only. They are part of the normal repo environment for every platform.
+
 3. Install the Caption CLI tool:
 
 ```sh
@@ -63,13 +70,13 @@ Use the `windows` branch on Windows:
 git checkout windows
 ```
 
-Then run the interactive PowerShell installer:
+Then run the installer from that branch:
 
 ```powershell
 .\setup_windows.ps1
 ```
 
-The installer confirms each step before it runs it: `git pull`, `uv` installation, `uv sync`, and Caption CLI installation.
+That script lives on the `windows` branch. It handles the Windows setup flow there, including dependency setup.
 
 ## Basic Usage
 
@@ -89,7 +96,7 @@ uv run startup.py
 
 Prefer the converted markdown file over the original binary document when reading or searching document text. For example, read `contract.pdf.md` instead of `contract.pdf`.
 
-For tabular data, use pandas through `uv run`. For Word document edits, use only `/redline`.
+For tabular data, use pandas through `uv run`. For Word document edits, use only `/redline`. For a Word-native comparison document from two existing `.docx` files, use `/compare`.
 
 ## Agent Instructions
 
@@ -112,19 +119,37 @@ Use this for Caption transcript and workspace tasks, including:
 - creating or editing Caption projects/folders
 - downloading transcript text
 
+### `/compare`
+
+Use this when you have two existing `.docx` files and need a third `.docx` showing the modified file's changes as Word track changes:
+
+```sh
+.claude/skills/compare/scripts/run_compare.sh original.docx modified.docx
+.claude/skills/compare/scripts/run_compare.sh original.docx modified.docx -o comparison.docx --author "A. Lin"
+```
+
+Constraints:
+
+- both inputs must be `.docx`
+- argument order is original first, modified second
+- the wrapper writes a new output file and refuses to overwrite either input
+- this workflow is powered by `python-redlines[docxodus]`, installed by the default `compare` dependency group
+
 ### `/redline`
 
-Use this for Word document editing and comparisons:
+Use this for Word document editing and machine-readable document diffs:
 
-- compare two `.docx` files
 - preview structured edits
 - apply redlines/comments back into a `.docx`
+- inspect `.docx` differences as text or JSON
 
 Important constraints:
 
 - this is the only approved way to edit Word documents in this repo
+- `adeu diff` outputs text or JSON only; use `/compare` when you need a human-readable track-changes `.docx`
 - do not use it to create a brand-new blank Word file from scratch
 - keep output as a new redlined file unless you explicitly want the original overwritten
+- `adeu` is sourced from the slim `vela-wood/adeu` Git tag declared in `pyproject.toml`
 
 ### `/share`
 
