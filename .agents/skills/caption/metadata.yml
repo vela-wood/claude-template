@@ -1,0 +1,26 @@
+name: caption
+type: reference-documentation
+description: Global caption CLI workflows for Caption API, Meilisearch, hosted history docs, and session sync
+version: 0.2.0
+agent_doc: SKILL.md
+commands:
+  - doctor
+  - guide
+  - token
+  - search
+  - list_projects
+  - list_folders
+  - create_project
+  - create_folder
+  - edit_project
+  - edit_folder
+  - dl_transcript
+  - tail
+  - assign_speakers
+  - list_speakers
+  - rename_speaker
+  - list_matters
+  - sync
+  - create_md
+  - list_md
+  - get_md

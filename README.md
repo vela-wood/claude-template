@@ -49,6 +49,9 @@ uv sync
 
 These are installed on **every** platform — none of them are Windows-only or Mac-only.
 
+The repository already contains real skill files for both Claude and Codex. No symlink
+setup is required.
+
 **3. Install the Caption tool** (for meeting/transcript features):
 
 ```sh
@@ -112,6 +115,9 @@ uv run setup_claude.py
 
 That's it — the same workspace, no branch switching required.
 
+The checked-in `.agents/skills/` directory contains the Codex copies. They are ordinary
+files, so Windows does not need Developer Mode or Git symlink support.
+
 ---
 
 ## Everyday use
@@ -153,7 +159,28 @@ The assistant's behavior is defined in a few files at the repo root:
 
 ## Available skills
 
-These are the built-in `/` commands the assistant can use. They live under `.claude/skills/`.
+These are the built-in commands the assistant can use. Claude reads `.claude/skills/`,
+and Codex reads `.agents/skills/`. Both directories are checked in as ordinary files so
+they work immediately after cloning on macOS, Linux, and Windows.
+
+`.claude/skills/` is the canonical copy. After editing or adding a skill, update the
+Codex copies with:
+
+```sh
+uv run sync_skills.py
+```
+
+To check for drift without changing files, run:
+
+```sh
+uv run sync_skills.py --check
+```
+
+GitHub Actions runs the same check on macOS, Linux, and Windows. Do not edit
+`.agents/skills/` directly; the next sync replaces it.
+
+The Claude-only `/share` skill is intentionally not copied. It requires Claude Code's
+`CLAUDE_CODE_SESSION_ID`, for which Codex has no documented repository interface.
 
 ### `/redline` — edit Word documents
 
@@ -175,8 +202,8 @@ Notes:
 When you have two existing `.docx` files and want a third `.docx` showing the second file's changes as Word Track Changes:
 
 ```sh
-.claude/skills/compare/scripts/run_compare.sh original.docx modified.docx
-.claude/skills/compare/scripts/run_compare.sh original.docx modified.docx -o comparison.docx --author "A. Lin"
+uv run .claude/skills/compare/scripts/run_compare.py original.docx modified.docx
+uv run .claude/skills/compare/scripts/run_compare.py original.docx modified.docx -o comparison.docx --author "A. Lin"
 ```
 
 - Both inputs must be `.docx`.
