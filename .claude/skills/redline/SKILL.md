@@ -15,7 +15,7 @@ Note: `adeu diff` outputs text/JSON only — it never produces a .docx. If the u
 
 Never use this skill to create a new blank Word document from scratch.
 
-!`.claude/skills/redline/scripts/run_redline.sh --help`
+!`uv run .claude/skills/redline/scripts/run_redline.py --help`
 
 The cli help should be visible above, fix all errors until the cli works.
 
@@ -28,13 +28,14 @@ The cli help should be visible above, fix all errors until the cli works.
 
 ## Command Runner
 
-Always execute Adeu through the repo wrapper:
+Always execute Adeu through the repo wrapper, launched with `uv run`:
 
 ```bash
-.claude/skills/redline/scripts/run_redline.sh --version
+uv run .claude/skills/redline/scripts/run_redline.py --version
 ```
 
-This wrapper resolves the repo root dynamically and executes the installed CLI from:
+`uv run` activates the repo `.venv`; the wrapper then loads `.env`, resolves the
+repo root dynamically, and executes the installed CLI from:
 - `<repo-root>/.venv/bin/adeu`
 
 ## Workflows
@@ -42,7 +43,7 @@ This wrapper resolves the repo root dynamically and executes the installed CLI f
 ### 1. Extract clean markdown
 
 ```bash
-.claude/skills/redline/scripts/run_redline.sh extract contract.docx -o contract.md
+uv run .claude/skills/redline/scripts/run_redline.py extract contract.docx -o contract.md
 ```
 
 Use this when you need a text representation for review, prompting, or search.
@@ -50,8 +51,8 @@ Use this when you need a text representation for review, prompting, or search.
 ### 2. Diff two DOCX files
 
 ```bash
-.claude/skills/redline/scripts/run_redline.sh diff v1.docx v2.docx
-.claude/skills/redline/scripts/run_redline.sh diff v1.docx revised.txt --json
+uv run .claude/skills/redline/scripts/run_redline.py diff v1.docx v2.docx
+uv run .claude/skills/redline/scripts/run_redline.py diff v1.docx revised.txt --json
 ```
 
 Use this to inspect how two document versions differ before applying further edits. The modified input can be another DOCX or a plain-text file.
@@ -59,7 +60,7 @@ Use this to inspect how two document versions differ before applying further edi
 ### 3. Apply redlines to a DOCX
 
 ```bash
-.claude/skills/redline/scripts/run_redline.sh apply contract.docx edits.json -o contract_redlined.docx --author "Review Bot"
+uv run .claude/skills/redline/scripts/run_redline.py apply contract.docx edits.json -o contract_redlined.docx --author "Review Bot"
 ```
 
 edits.json follows the following schema:
@@ -113,7 +114,7 @@ Store `edits.json` in the adeu/ folder with a useful filename for debugging, avo
 
 ## Critical Constraints
 
-- Always use the wrapper script. Do not use `uvx`.
+- Always invoke the wrapper via `uv run .claude/skills/redline/scripts/run_redline.py`. Do not use `uvx`.
 - Always extract the document before editing so the target text matches the source.
 - Use a preview or diff flow before applying large batches of edits.
 - Keep redlined output as a new file unless the user explicitly asks to overwrite the original.
