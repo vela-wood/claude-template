@@ -5,8 +5,7 @@ version: 0.2.0
 agent_doc: SKILL.md
 commands:
   - doctor
-  - capabilities
-  - robot-docs
+  - guide
   - token
   - search
   - list_projects
@@ -16,6 +15,7 @@ commands:
   - edit_project
   - edit_folder
   - dl_transcript
+  - tail
   - assign_speakers
   - list_speakers
   - rename_speaker

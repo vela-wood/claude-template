@@ -8,7 +8,7 @@ Triage by exit code first, then by symptom. Diagnostics go to stderr; data goes 
 |---|---|---|
 | 0 | success (empty results included) | none - empty is not an error |
 | 1 | user-input error (bad value, bad local path, conflicting flags); also `doctor --strict` probe failure | read stderr; fix the argument |
-| 2 | usage error (unknown command/flag, missing argument) | check flag ordering and syntax in `caption capabilities` |
+| 2 | usage error (unknown command/flag, missing argument) | check flag ordering and syntax in `caption guide` |
 | 3 | configuration error (missing env var) | identify which var THAT command needs (see below) |
 | 4 | upstream failure (HTTP error, Meili error, malformed response) | read the embedded error report; retry once; then `doctor --strict` |
 | 5 | remote resource not found (404) | verify the UUID against cached `list_projects` / `list_matters` output |
@@ -22,7 +22,7 @@ caption --output json --output-file caption_cache/x.json list_projects   # corre
 caption list_projects --output json                                      # exit 2
 ```
 
-Also: `caption --version` does not exist (exit 2). Use `caption capabilities` and read `.version`.
+Also: `caption --version` and `caption capabilities` do not exist (exit 2). Use `caption guide` (or `caption --output json guide`) instead.
 
 ## Missing environment (exit 3)
 
@@ -31,7 +31,7 @@ Requirements are per-command, not global - do NOT assume every command needs `CA
 - Caption workspace API commands (`list_projects`, `list_folders`, `create_*`, `edit_*`, `dl_transcript`, `assign_speakers`, `list_speakers`, `rename_speaker`): `CAPTION_API_URL` + `CLERK_API_KEY`
 - `token`, `search`: additionally `CAPTION_MEILI_URL`
 - Hosted history (`sync`, `list_matters`, `create_md`, `list_md`, `get_md`): `CLERK_API_KEY` + `ORGANIZATION_ID`, no `CAPTION_API_URL` needed
-- `capabilities`, `robot-docs`, `--help`: nothing
+- `guide`, `--help`: nothing
 
 Recovery:
 1. A `.env` in `$PWD` is loaded automatically; pass `--env-file <path>` for another location.

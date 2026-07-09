@@ -8,6 +8,7 @@ wheels/
 USERPREFS.md
 *.json
 .venv
+/.uv-cache/
 .DS_Store
 /.osgrep
 /caption_cache/

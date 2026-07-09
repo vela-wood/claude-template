@@ -11,11 +11,11 @@ This skill operates the global `caption` CLI (installed via `uv tool install`) f
 
 The CLI is self-describing. These docs cover routing, delegation, and safety defaults; for exact syntax, the live CLI is the source of truth:
 
-- `caption capabilities` - machine-readable contract (commands, flags, exit codes, env vars). Works offline, no credentials.
-- `caption robot-docs guide` - paste-ready agent handbook generated from the live command table.
+- `caption guide` - paste-ready agent handbook generated from the live command table. Works offline, no credentials.
+- `caption --output json guide` - machine-readable contract (commands, flags, exit codes, env vars).
 - `caption --output json doctor --strict` - health check; exits non-zero if a feature probe fails.
 
-`caption --version` is NOT supported. Read the version from `capabilities.version` instead.
+`caption --version` is NOT supported and `caption capabilities` does not exist. Run `caption guide` (or `caption --output json guide`) instead.
 
 ## Delegation policy (IMPORTANT)
 
@@ -53,7 +53,7 @@ caption --output json --output-file caption_cache/search_<slug>.json search "ter
 
 ## Required environment
 
-Not all commands need all keys - check `needs_api` in `caption capabilities`:
+Not all commands need all keys - check the `requires:` line for each command in `caption guide`:
 
 - `CAPTION_API_URL` - Caption workspace API commands (`list_projects`, `dl_transcript`, speaker commands, etc.)
 - `CLERK_API_KEY` - all authenticated calls (Caption API and hosted history)
@@ -61,7 +61,7 @@ Not all commands need all keys - check `needs_api` in `caption capabilities`:
 - `ORGANIZATION_ID` - hosted history commands (`sync`, `list_matters`, `create_md`, `list_md`, `get_md`)
 - `AGENT_VIEWER_DATA_DIR` - optional; overrides the agentsview data dir for `sync` (default `~/.agentsview`)
 
-`capabilities`, `robot-docs`, and `--help` need no credentials. A `.env` in `$PWD` loads automatically; override with `--env-file`. Hosted history commands also accept `--clerk-api-key` / `--org-id` flags.
+`guide` and `--help` need no credentials. A `.env` in `$PWD` loads automatically; override with `--env-file`. Hosted history commands also accept `--clerk-api-key` / `--org-id` flags.
 
 Install model:
 
@@ -73,7 +73,7 @@ If `caption` is missing from `PATH` afterward, run `uv tool update-shell`.
 
 ## Startup for a caption task
 
-1. `caption capabilities` (or delegate to a haiku subagent that returns just the command names relevant to the task).
+1. `caption guide` (or delegate to a haiku subagent that returns just the command names relevant to the task).
 2. If anything fails or the environment is uncertain: `caption --output json doctor --strict`.
 3. Route the work per the delegation policy above.
 
@@ -82,8 +82,8 @@ If `caption` is missing from `PATH` afterward, run `uv tool update-shell`.
 ### 1) Discovery / health
 
 ```bash
-caption capabilities
-caption robot-docs guide
+caption guide
+caption --output json guide
 caption --output json --output-file caption_cache/doctor.json doctor --strict
 ```
 
@@ -170,13 +170,13 @@ Rules:
 - `list_projects` != `list_matters` (workspace API vs hosted history server).
 - Reference `caption_cache/` before re-requesting anything.
 - Validate UUIDs (via cached listings) before edit/create flows; use `--dry-run` on any mutation whose intent is unclear.
-- Do not invent flags. Confirm syntax in `caption capabilities` or `caption <command> --help`.
+- Do not invent flags. Confirm syntax in `caption guide` or `caption <command> --help`.
 - Never paste raw tokens (`token --show-token`) into logs, summaries, or chat.
 
 ## Common failures
 
 - `command not found: caption` - run the `uv tool install` command above; then `uv tool update-shell`.
-- Exit 3 (configuration) - a required env var is missing for THAT command; check the env-var dictionary in `capabilities` rather than assuming all keys are needed.
+- Exit 3 (configuration) - a required env var is missing for THAT command; check the `requires:` line for that command in `caption guide` rather than assuming all keys are needed.
 - Exit 2 (usage) - flag ordering or unknown flag; re-check global-flag-before-subcommand ordering.
 - Condensed output missing fields - re-run with `--full`.
 - Meili auth failure - `search` refreshes the token once automatically; persistent failure means `CLERK_API_KEY` is invalid.
@@ -187,7 +187,7 @@ See `references/command_contracts.md` for the command map and `references/error_
 
 | Command | Purpose | Delegate to |
 |---|---|---|
-| `capabilities` / `robot-docs guide` | Live CLI contract / agent handbook | haiku |
+| `guide` / `--output json guide` | Agent handbook / live CLI contract | haiku |
 | `doctor --strict` | Feature/health probes | haiku |
 | `token` | Fetch/cache Meili search token (debug only) | haiku |
 | `search <query>` | Search a Meilisearch index | sonnet |
