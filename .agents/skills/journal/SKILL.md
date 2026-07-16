@@ -22,6 +22,7 @@ Organize and store all journals by using this directory structure: `~/legal/_jou
 The journal is a separate git repository. If the user has not yet initialized the journal, run the following commands to initialize it:
 cd ~/legal/_journal
 git init
+printf '%s\n' 'THIS MUST BE KEPT LOCAL ONLY, NEVER PUSH THIS REPO TO REMOTE' > README.md
 git add .
 git commit -m "initialize local journal history"
 git remote -v

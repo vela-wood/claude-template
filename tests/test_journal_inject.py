@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -12,6 +14,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOK = REPO_ROOT / ".claude" / "hooks" / "journal_inject.py"
+
+
+class BrokenFlushStream(io.StringIO):
+    """Stream whose flush deterministically fails, like a closed stdout pipe."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError("simulated closed stdout")
 
 
 class JournalInjectTests(unittest.TestCase):
@@ -45,6 +54,19 @@ class JournalInjectTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         return result.stdout
 
+    def load_hook_module(self):
+        """Import the hook in-process so a test can drive process() directly
+        with a controlled output stream."""
+        spec = importlib.util.spec_from_file_location("journal_inject_under_test", HOOK)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        module.JOURNAL_ROOT = self.root
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(self.runtime_tmp)
+        self.addCleanup(lambda: setattr(tempfile, "tempdir", previous_tempdir))
+        return module
+
     def write_matter(
         self,
         *,
@@ -68,6 +90,23 @@ class JournalInjectTests(unittest.TestCase):
             f"- **{open_item}** [owner: counsel; last checked 20260714-1200]\n\n"
             "## Resolved\n"
             "- None.\n",
+            encoding="utf-8",
+        )
+        self.set_mtime(entry, self.base_ns)
+        self.set_mtime(state, self.base_ns + 5_000_000_000)
+        return state, entry
+
+    def write_blog_bucket(self) -> tuple[Path, Path]:
+        entry = self.root / "VW-Internal-Blogs_20260714_update.md"
+        state = self.root / "VW-Internal-Blogs__matter.md"
+        entry.write_text("# Blog dated entry\n", encoding="utf-8")
+        state.write_text(
+            "# VW Internal Blogs\n"
+            "**State as of:** 20260714\n\n"
+            "## Current state\n"
+            "- Editorial calendar ready.\n\n"
+            "## Open items\n"
+            "- **Draft launch article** [owner: marketing; last checked 20260714-1200]\n",
             encoding="utf-8",
         )
         self.set_mtime(entry, self.base_ns)
@@ -127,6 +166,47 @@ class JournalInjectTests(unittest.TestCase):
         self.assertIn("CHANGED since it was injected", output)
         self.assertNotIn("--- FULL STATE FILE BELOW ---", output)
 
+    def test_new_dated_entry_triggers_same_session_stale_notice(self) -> None:
+        state, _ = self.write_matter()
+        first = self.run_hook("Review matter 12345", session_id="entry-session")
+        self.assertIn("<matter-journal ", first)
+
+        newer = state.parent / "20260715_call_notes.md"
+        newer.write_text("# Newer dated entry\n", encoding="utf-8")
+        self.set_mtime(newer, self.base_ns + 10_000_000_000)
+        # _matter.md deliberately untouched: only the dated entries changed.
+
+        second = self.run_hook("Review matter 12345 again", session_id="entry-session")
+
+        self.assertIn('<matter-journal-update matter="12345" state="STALE"', second)
+        self.assertIn("20260715_call_notes.md", second)
+        self.assertNotIn("--- FULL STATE FILE BELOW ---", second)
+
+    def test_failed_output_does_not_commit_marker(self) -> None:
+        self.write_matter()
+        module = self.load_hook_module()
+        data = {"prompt": "Review matter 12345", "session_id": "flush-fail-session"}
+
+        rc = module.process(data, BrokenFlushStream())
+
+        self.assertEqual(rc, 0)
+        state_dir = self.runtime_tmp / "claude_journal_hook"
+        markers = list(state_dir.iterdir()) if state_dir.exists() else []
+        self.assertEqual(markers, [])
+
+        retry = io.StringIO()
+        module.process(data, retry)
+        output = retry.getvalue()
+        self.assertIn('<matter-journal matter="12345" state="CURRENT"', output)
+        self.assertIn("--- FULL STATE FILE BELOW ---", output)
+
+    def test_embedded_numeric_code_does_not_match(self) -> None:
+        self.write_matter()
+
+        output = self.run_hook("Deploy build ABC12345XYZ to staging")
+
+        self.assertEqual(output, "")
+
     def test_entry_less_than_two_seconds_newer_marks_state_stale(self) -> None:
         state, entry = self.write_matter()
         self.set_mtime(state, self.base_ns)
@@ -164,21 +244,15 @@ class JournalInjectTests(unittest.TestCase):
 
         self.assertEqual(output, "")
 
+    def test_generic_long_single_token_entity_does_not_match(self) -> None:
+        self.write_matter(entity="Discovery LLC")
+
+        output = self.run_hook("Review the discovery responses.")
+
+        self.assertEqual(output, "")
+
     def test_flat_blog_bucket_injects(self) -> None:
-        entry = self.root / "VW-Internal-Blogs_20260714_update.md"
-        state = self.root / "VW-Internal-Blogs__matter.md"
-        entry.write_text("# Blog dated entry\n", encoding="utf-8")
-        state.write_text(
-            "# VW Internal Blogs\n"
-            "**State as of:** 20260714\n\n"
-            "## Current state\n"
-            "- Editorial calendar ready.\n\n"
-            "## Open items\n"
-            "- **Draft launch article** [owner: marketing; last checked 20260714-1200]\n",
-            encoding="utf-8",
-        )
-        self.set_mtime(entry, self.base_ns)
-        self.set_mtime(state, self.base_ns + 5_000_000_000)
+        self.write_blog_bucket()
 
         output = self.run_hook("Draft the next blog post", session_id="flat-session")
 
@@ -187,6 +261,13 @@ class JournalInjectTests(unittest.TestCase):
             output,
         )
         self.assertIn("Draft launch article", output)
+
+    def test_routine_corporate_articles_language_does_not_trigger_blogs(self) -> None:
+        self.write_blog_bucket()
+
+        output = self.run_hook("Amend the restated articles.")
+
+        self.assertEqual(output, "")
 
 
 if __name__ == "__main__":
