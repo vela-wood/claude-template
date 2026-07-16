@@ -4,6 +4,23 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": [
+              "run",
+              "--no-project",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/journal_inject.py"
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "Bash(uv run markitdown:*)",
