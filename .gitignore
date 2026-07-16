@@ -14,6 +14,7 @@ USERPREFS.md
 /caption_cache/
 .env
 *.cfg
+adeu/
 
 # Matter documents and converted markdown sidecars.
 *.docx
@@ -40,3 +41,4 @@ USERPREFS.md
 *.msg.md
 *.doc
 *.doc.md
+.osgrep
