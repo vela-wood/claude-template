@@ -11,8 +11,6 @@ This skill runs Python-Redlines (Docxodus engine) from the repo-local environmen
 
 !`.claude/skills/compare/scripts/run_compare.sh --help`
 
-The cli help should be visible above, fix all errors until the cli works.
-
 ## When to use /compare vs /redline
 
 - **/compare** (this skill): you have **two existing documents** and need a **track-changes .docx a human can open in Word**. Output is a new document for human consumption.
@@ -44,7 +42,9 @@ By default the output is written next to the modified file as:
 <modified-stem>_vs_<original-stem>_compare_YYYYMMDD.docx
 ```
 
-Use `-o` to override. The script refuses to overwrite either input file.
+Use `-o` to override; missing parent directories are created. The script refuses to
+overwrite either input file, and if that default name already exists (a second compare
+of the same pair on the same day) it appends `_2`, `_3`, … rather than clobbering it.
 
 ## Critical Constraints
 

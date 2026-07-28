@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -10,8 +11,14 @@ from pathlib import Path
 
 def _default_output(original: Path, modified: Path) -> Path:
     stamp = date.today().strftime("%Y%m%d")
-    name = f"{modified.stem}_vs_{original.stem}_compare_{stamp}.docx"
-    return modified.parent / name
+    base = f"{modified.stem}_vs_{original.stem}_compare_{stamp}"
+    candidate = modified.parent / f"{base}.docx"
+    # Never clobber an earlier comparison of the same pair on the same day.
+    counter = 2
+    while candidate.exists():
+        candidate = modified.parent / f"{base}_{counter}.docx"
+        counter += 1
+    return candidate
 
 
 def main(argv: list[str]) -> int:
@@ -45,8 +52,15 @@ def main(argv: list[str]) -> int:
             print(f"{label} file must be a .docx: {path}", file=sys.stderr)
             return 1
 
+    if args.original.resolve() == args.modified.resolve():
+        print(
+            "Original and Modified are the same file; nothing to compare.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
-        from python_redlines import DocxodusEngine
+        from python_redlines import DocxodusEngine, EngineNotInstalledError
     except ImportError:
         print("python_redlines is not installed in .venv.", file=sys.stderr)
         print(
@@ -61,16 +75,37 @@ def main(argv: list[str]) -> int:
         print("Output path must not overwrite an input file.", file=sys.stderr)
         return 1
 
-    engine = DocxodusEngine()
-    redline_bytes, stdout, stderr = engine.run_redline(
-        args.author, args.original, args.modified
-    )
+    try:
+        engine = DocxodusEngine()
+    except EngineNotInstalledError as exc:
+        print(f"Compare engine unavailable: {exc}", file=sys.stderr)
+        print(
+            "Run 'uv sync' at the repo root. The default 'compare' group installs "
+            "python-redlines[docxodus] into the shared .venv.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Hand the engine bytes, not paths: run_redline() unconditionally deletes the
+    # paths it is given, so passing Path objects destroys both source documents.
+    try:
+        redline_bytes, _stdout, stderr = engine.run_redline(
+            args.author, args.original.read_bytes(), args.modified.read_bytes()
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"Compare failed: engine exited {exc.returncode}.", file=sys.stderr)
+        for stream in (exc.stderr, exc.stdout):
+            if stream:
+                print(stream.strip(), file=sys.stderr)
+        return 1
+
     if stderr:
         print(stderr, file=sys.stderr)
     if not redline_bytes:
         print("Compare failed: engine returned no output.", file=sys.stderr)
         return 1
 
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(redline_bytes)
     print(f"Wrote track-changes comparison: {output}")
     return 0
