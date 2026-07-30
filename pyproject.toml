@@ -38,7 +38,7 @@ package = true
 default-groups = ["redline", "compare"]
 
 [tool.uv.sources]
-adeu = { git = "https://github.com/vela-wood/adeu.git", tag = "v1.19.0-slim", subdirectory = "python" }
+adeu = { git = "https://github.com/vela-wood/adeu.git", branch = "slim", subdirectory = "python" }
 
 [tool.setuptools.packages.find]
 include = ["netdocs*"]
