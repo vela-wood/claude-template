@@ -1,16 +1,40 @@
+"""Convert supported documents/emails to Markdown sidecars and maintain
+the hash, token, and OCR indexes for the working folder.
+
+Orchestration only: routing and rendering live in document_conversion.py,
+PDF classification in pdfcheck.py, atomic replacement in fsio.py.
+
+Certification model: the hash index is written last and is the certification
+marker. A source is "unchanged" only when its fresh CRC32 equals the
+previously certified hash AND its sidecar exists AND it has a valid token
+row. Any hashing, classification, conversion, tokenization, requested-OCR,
+sidecar-write, or index-write failure leaves prior state in place, is
+reported, and produces a nonzero exit. Pending OCR consent and skipped
+.mbx notices alone exit zero.
+"""
+
 import argparse
 import csv
+import io
 import json
 import os
 import shutil
 import subprocess
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import tiktoken
 
+from document_conversion import (
+    MBX_SUFFIX,
+    SOURCE_SUFFIXES,
+    convert_to_markdown,
+    route_for,
+)
+from fsio import atomic_write_text, commit_staged, discard_staged, stage_text
 from netdocs.env import load_repo_dotenv
 from pdfcheck import (
     NEEDS_OCR_VERDICTS,
@@ -26,24 +50,33 @@ load_repo_dotenv(__file__)
 HASH_INDEX_FILENAME = ".hash_index.csv"
 TOKEN_INDEX_FILENAME = ".token_index.csv"
 CAPTION_OUTPUT_DIRNAME = "caption_cache"
-DOCX_CONVERTER_MARKITDOWN = "markitdown"
-DEFAULT_DOCX_CONVERTER = DOCX_CONVERTER_MARKITDOWN
-EMAIL_SUFFIXES = {
-    ".eml",
-    ".msg",
-    ".emlx",
-    ".mbox",
-    ".mbx",
-    ".mht",
-    ".mhtml",
-    ".oft",
-}
-NATIVE_EMAIL_SUFFIXES = {".eml", ".emlx"}
-MARKITDOWN_MD_SUFFIXES = {".pdf"} | (EMAIL_SUFFIXES - NATIVE_EMAIL_SUFFIXES)
-SOURCE_SUFFIXES = MARKITDOWN_MD_SUFFIXES | NATIVE_EMAIL_SUFFIXES | {".docx"}
+
+# Statuses for ProcessingResult
+STATUS_UNCHANGED = "unchanged"
+STATUS_CONVERTED = "converted"
+STATUS_FAILED = "failed"
+STATUS_DEFERRED_FOR_OCR = "deferred_for_ocr"
+
+# Cap applies specifically to active converter calls; hashing and index
+# work use separate default-sized pools.
+CONVERSION_MAX_WORKERS = 4
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")
+
+
+@dataclass(frozen=True)
+class ProcessingResult:
+    """Immutable per-source outcome; only the orchestrator stages indexes."""
+
+    source_rel: str
+    status: str
+    route: str
+    sidecar_rel: str | None = None
+    file_hash: str | None = None
+    tokens: int | None = None
+    ocr_done: bool = False  # OCR-state transition to stage on success
+    detail: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -61,160 +94,145 @@ def hash_file(path: Path) -> str:
 
 
 def count_tokens(path: Path) -> int:
-    """Count tokens in a text file using tiktoken cl100k_base."""
-    text = path.read_text(errors="replace")
+    """Count tokens in a UTF-8 text file using tiktoken cl100k_base."""
+    text = path.read_text(encoding="utf-8")
     return len(_encoding.encode(text))
 
 
-def converted_path(source: Path, docx_converter: str = DEFAULT_DOCX_CONVERTER) -> Path:
+def converted_path(source: Path) -> Path:
     """Return the expected converted-file path for a source file."""
-    suffix = source.suffix.lower()
-    if suffix in MARKITDOWN_MD_SUFFIXES or suffix in NATIVE_EMAIL_SUFFIXES:
-        return source.parent / f"{source.name}.md"
-    if suffix == ".docx":
+    if source.suffix.lower() in SOURCE_SUFFIXES:
         return source.parent / f"{source.name}.md"
     raise ValueError(f"Unsupported source type: {source}")
 
 
+def _rel(root: Path, path: Path) -> str:
+    return str(path.relative_to(root))
+
+
 # ---------------------------------------------------------------------------
-# Index I/O
+# Index I/O (three typed loaders/serializers; all UTF-8, atomic replacement)
 # ---------------------------------------------------------------------------
 
 
 def load_hash_index(root: Path) -> dict[str, str]:
-    """Load .hash_index.csv → {native_relative_path: hash}."""
+    """Load .hash_index.csv → {source_relative_path: hash}."""
     index_path = root / HASH_INDEX_FILENAME
     index: dict[str, str] = {}
     if not index_path.exists():
         return index
-    with open(index_path, newline="") as f:
+    with open(index_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             index[row["file"]] = row["hash"]
     return index
 
 
 def save_hash_index(root: Path, index: dict[str, str]) -> None:
-    """Write .hash_index.csv from {native_relative_path: hash}."""
-    index_path = root / HASH_INDEX_FILENAME
-    with open(index_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["file", "hash"])
-        for rel_path in sorted(index):
-            writer.writerow([rel_path, index[rel_path]])
+    """Write .hash_index.csv from {source_relative_path: hash}."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["file", "hash"])
+    for rel_path in sorted(index):
+        writer.writerow([rel_path, index[rel_path]])
+    atomic_write_text(root / HASH_INDEX_FILENAME, buf.getvalue(), newline="")
 
 
 def load_token_index(root: Path) -> dict[str, int]:
-    """Load .token_index.csv → {converted_relative_path: token_count}."""
+    """Load .token_index.csv → {sidecar_relative_path: token_count}.
+
+    Rows with non-integer token values are dropped: an invalid token row is
+    inconsistent certification and must trigger reconversion.
+    """
     index_path = root / TOKEN_INDEX_FILENAME
     index: dict[str, int] = {}
     if not index_path.exists():
         return index
-    with open(index_path, newline="") as f:
+    with open(index_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            index[row["file"]] = int(row["tokens"])
+            try:
+                index[row["file"]] = int(row["tokens"])
+            except (ValueError, TypeError):
+                continue
     return index
 
 
 def save_token_index(root: Path, index: dict[str, int]) -> None:
-    """Write .token_index.csv from {converted_relative_path: token_count}."""
-    index_path = root / TOKEN_INDEX_FILENAME
-    with open(index_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["file", "tokens"])
-        for rel_path in sorted(index):
-            writer.writerow([rel_path, index[rel_path]])
+    """Write .token_index.csv from {sidecar_relative_path: token_count}."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["file", "tokens"])
+    for rel_path in sorted(index):
+        writer.writerow([rel_path, index[rel_path]])
+    atomic_write_text(root / TOKEN_INDEX_FILENAME, buf.getvalue(), newline="")
 
 
 # ---------------------------------------------------------------------------
-# Conversion
+# Discovery
 # ---------------------------------------------------------------------------
 
 
-def _convert_one_markitdown(source: Path, md_path: Path) -> None:
-    subprocess.run(
-        ["uv", "run", "markitdown", str(source), "-o", str(md_path)],
-        check=True,
-    )
+def discover_sources(root: Path) -> tuple[list[Path], list[Path]]:
+    """Walk root and return (supported sources, noticed .mbx files).
+
+    Dot-prefixed directories and the caption cache are pruned before
+    descent. Dot-prefixed *files* outside pruned trees stay eligible;
+    '~'-prefixed temporary files are skipped. .mbx files are collected for
+    the user notice but are never sources (ambiguous Eudora/Outlook Express
+    binary formats are incompatible with Unix mbox).
+    """
+    sources: list[Path] = []
+    mbx_files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not d.startswith(".") and d != CAPTION_OUTPUT_DIRNAME
+        ]
+        for name in filenames:
+            if name.startswith("~"):
+                continue
+            path = Path(dirpath) / name
+            suffix = path.suffix.lower()
+            if suffix == MBX_SUFFIX:
+                mbx_files.append(path)
+            elif suffix in SOURCE_SUFFIXES:
+                sources.append(path)
+    return sorted(sources), sorted(mbx_files)
 
 
-def _convert_one_email(source: Path, md_path: Path) -> None:
-    """Convert .eml/.emlx to clean markdown using Python's email module."""
-    import email as _email
-    from email import policy as _policy
+# ---------------------------------------------------------------------------
+# Hashing
+# ---------------------------------------------------------------------------
 
-    with open(source, "rb") as f:
-        msg = _email.message_from_binary_file(f, policy=_policy.default)
 
-    lines = [
-        f"# {msg['subject'] or '(no subject)'}",
-        "",
-        f"**From:** {msg['from']}",
-        f"**To:** {msg['to']}",
-    ]
-    if msg["cc"]:
-        lines.append(f"**CC:** {msg['cc']}")
-    lines += [f"**Date:** {msg['date']}", "", "---", ""]
+def hash_sources(
+    root: Path, sources: list[Path]
+) -> tuple[dict[str, str], list[ProcessingResult]]:
+    """Hash all discovered sources in parallel.
 
-    body = None
-    for part in msg.walk():
-        if part.get_content_type() == "text/plain":
-            try:
-                body = part.get_content()
-            except Exception:
-                body = part.get_payload(decode=True).decode("utf-8", errors="replace")
-            break
-    lines.append(body if body else "(no text content)")
-    md_path.write_text("\n".join(lines), encoding="utf-8")
-
-def convert_files(
-    root: Path,
-    sources: list[Path],
-    hashes: dict[str, str],
-    hash_index: dict[str, str],
-    docx_converter: str,
-    skip_rels: set[str] | None = None,
-) -> list[str]:
-    """Convert source files whose hash is new or changed. Returns list of native relative paths that were converted."""
-    skip_rels = skip_rels or set()
-    to_convert: list[Path] = []
-    for src in sources:
-        rel = str(src.relative_to(root))
-        if rel in skip_rels:
-            continue
-        old_hash = hash_index.get(rel)
-        out = converted_path(src, docx_converter)
-        if old_hash is None or old_hash != hashes[rel] or not out.exists():
-            to_convert.append(src)
-
-    if not to_convert:
-        return []
-
-    converted_rels: list[str] = []
-    print(f"\nConverting {len(to_convert)} file(s)...")
-
-    def _do_convert(src: Path) -> str:
-        rel = str(src.relative_to(root))
-        out = converted_path(src, docx_converter)
-        print(f"\t{rel} -> {out.name}")
-        suffix = src.suffix.lower()
-        if suffix in NATIVE_EMAIL_SUFFIXES:
-            _convert_one_email(src, out)
-        elif suffix in MARKITDOWN_MD_SUFFIXES:
-            _convert_one_markitdown(src, out)
-        elif suffix == ".docx":
-            _convert_one_markitdown(src, out)
-        return rel
-
+    Returns ({rel: hash} for successes, failed ProcessingResults). A hash
+    failure means the source is not classified, converted, or tokenized;
+    its prior index rows and sidecar are preserved by reconciliation.
+    """
+    hashes: dict[str, str] = {}
+    failures: list[ProcessingResult] = []
     with ThreadPoolExecutor() as pool:
-        futures = {pool.submit(_do_convert, src): src for src in to_convert}
+        futures = {pool.submit(hash_file, src): src for src in sources}
         for future in as_completed(futures):
             src = futures[future]
+            rel = _rel(root, src)
             try:
-                converted_rels.append(future.result())
+                hashes[rel] = future.result()
             except Exception as exc:
-                print(f"\tERROR converting {src.relative_to(root)}: {exc}")
-
-    return converted_rels
+                failures.append(
+                    ProcessingResult(
+                        rel,
+                        STATUS_FAILED,
+                        "hash",
+                        detail=f"hashing failed: {type(exc).__name__}: {exc}",
+                    )
+                )
+    return hashes, failures
 
 
 # ---------------------------------------------------------------------------
@@ -224,43 +242,37 @@ def convert_files(
 
 def classify_pdfs(
     root: Path,
-    sources: list[Path],
+    pdf_rels: list[str],
     hashes: dict[str, str],
     ocr_index: dict[str, dict[str, str]],
-) -> None:
-    """Classify new/changed PDFs and update ocr_index in-place.
+) -> list[ProcessingResult]:
+    """Classify new/changed PDFs, updating ocr_index rows in place.
 
-    Files verdicted scanned-image-only or mixed/other get needs_ocr=True;
-    markitdown conversion will produce nothing useful for those.
+    A classification error preserves the prior OCR row and returns a failed
+    result so the source is excluded from OCR selection and conversion.
     """
-    pdf_rels = [
-        str(src.relative_to(root)) for src in sources if src.suffix.lower() == ".pdf"
-    ]
+    failures: list[ProcessingResult] = []
     to_classify = [
-        rel
-        for rel in pdf_rels
-        if rel in hashes and ocr_index.get(rel, {}).get("hash") != hashes[rel]
+        rel for rel in pdf_rels if ocr_index.get(rel, {}).get("hash") != hashes[rel]
     ]
+    if not to_classify:
+        return failures
 
-    if to_classify:
-        print(f"\nClassifying {len(to_classify)} PDF(s) (scanned vs digital)...")
-        for rel in to_classify:
-            result = classify_pdf(root / rel)
-            ocr_index[rel] = index_row(rel, hashes[rel], result)
-            if result.needs_ocr:
-                print(f"\t{rel}: {result.verdict} -> needs_ocr")
-
-    current = set(pdf_rels)
-    for rel in [rel for rel in ocr_index if rel not in current]:
-        del ocr_index[rel]
-
-
-# ---------------------------------------------------------------------------
-# OCR (focr) for PDFs flagged needs_ocr
-# ---------------------------------------------------------------------------
-
-# The model resizes pages to a 1024px global view, so 150 dpi is ample.
-_OCR_RASTER_DPI = 150
+    print(f"\nClassifying {len(to_classify)} PDF(s) (scanned vs digital)...")
+    for rel in to_classify:
+        result = classify_pdf(root / rel)
+        if result.verdict.startswith("error:"):
+            failures.append(
+                ProcessingResult(
+                    rel, STATUS_FAILED, "classify", detail=result.verdict
+                )
+            )
+            print(f"\tERROR classifying {rel}: {result.verdict}")
+            continue
+        ocr_index[rel] = index_row(rel, hashes[rel], result)
+        if result.needs_ocr:
+            print(f"\t{rel}: {result.verdict} -> needs_ocr")
+    return failures
 
 
 def pending_ocr_rels(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
@@ -270,10 +282,99 @@ def pending_ocr_rels(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[s
         for rel, row in sorted(ocr_index.items())
         if row["verdict"] in NEEDS_OCR_VERDICTS
         and not (
-            row.get("ocr_done") == "true"
-            and converted_path(root / rel, DEFAULT_DOCX_CONVERTER).exists()
+            row.get("ocr_done") == "true" and converted_path(root / rel).exists()
         )
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sidecar production (shared by conversion and OCR reassembly)
+# ---------------------------------------------------------------------------
+
+
+def _finalize_sidecar(
+    root: Path,
+    src: Path,
+    pre_hash: str,
+    text: str,
+    route: str,
+    ocr_done: bool = False,
+) -> ProcessingResult:
+    """Temp-file write, empty rejection, tokenize, rehash, atomic replace.
+
+    Only a fully successful result may later have its hash/token rows
+    staged by the orchestrator.
+    """
+    rel = _rel(root, src)
+    out = converted_path(src)
+    conv_rel = _rel(root, out)
+    tmp = None
+    try:
+        if not text or not text.strip():
+            raise ValueError(f"empty conversion output for {src.name}")
+        tmp = stage_text(out, text)
+        tokens = count_tokens(tmp)
+        if hash_file(src) != pre_hash:
+            raise ValueError("source changed during conversion")
+        commit_staged(tmp, out)
+        tmp = None
+        return ProcessingResult(
+            rel, STATUS_CONVERTED, route, conv_rel, pre_hash, tokens, ocr_done
+        )
+    except Exception as exc:
+        return ProcessingResult(
+            rel,
+            STATUS_FAILED,
+            route,
+            conv_rel,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        if tmp is not None:
+            discard_staged(tmp)
+
+
+def convert_sources(
+    root: Path, to_convert: list[Path], hashes: dict[str, str]
+) -> list[ProcessingResult]:
+    """Convert sources through the router with at most 4 active converters."""
+    if not to_convert:
+        return []
+    print(f"\nConverting {len(to_convert)} file(s)...")
+    results: list[ProcessingResult] = []
+
+    def _do_convert(src: Path) -> ProcessingResult:
+        rel = _rel(root, src)
+        out = converted_path(src)
+        print(f"\t{rel} -> {out.name}")
+        try:
+            text = convert_to_markdown(src)
+        except Exception as exc:
+            return ProcessingResult(
+                rel,
+                STATUS_FAILED,
+                route_for(src),
+                _rel(root, out),
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+        return _finalize_sidecar(root, src, hashes[rel], text, route_for(src))
+
+    with ThreadPoolExecutor(max_workers=CONVERSION_MAX_WORKERS) as pool:
+        futures = {pool.submit(_do_convert, src): src for src in to_convert}
+        for future in as_completed(futures):
+            results.append(future.result())
+    for r in results:
+        if r.status == STATUS_FAILED:
+            print(f"\tERROR converting {r.source_rel}: {r.detail}")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# OCR (focr) for PDFs flagged needs_ocr
+# ---------------------------------------------------------------------------
+
+# The model resizes pages to a 1024px global view, so 150 dpi is ample.
+_OCR_RASTER_DPI = 150
 
 
 def _parse_focr_batch_results(stdout: str) -> dict[str, dict[str, Any]]:
@@ -316,30 +417,34 @@ def _parse_focr_batch_results(stdout: str) -> dict[str, dict[str, Any]]:
     return results
 
 
-def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
-    """Run focr on PDFs flagged needs_ocr that lack a successful conversion.
+def run_ocr(
+    root: Path, to_ocr: list[str], hashes: dict[str, str]
+) -> list[ProcessingResult]:
+    """Run focr on pending PDFs; return one ProcessingResult per PDF.
 
     All pages of all pending PDFs are rasterized to a temp dir and fed to a
     single `focr ocr-batch` invocation, so the multi-GB model is loaded once
-    for the whole run instead of once per file. Per-PDF output is written to
-    foo.pdf.md (pages joined with a blank line, matching focr's native
-    PDF handling), and ocr_done is set only when every page of a PDF OCRed
-    successfully.
-
-    A row is skipped when ocr_done == "true" and its converted markdown still
-    exists; classify_pdfs() resets ocr_done whenever a PDF's hash changes,
-    so changed files are re-OCRed automatically. Updates ocr_index in-place.
+    for the whole run instead of once per file. Per-PDF output goes through
+    the same temp-file, empty-rejection, tokenize, rehash, atomic-replace
+    path as every other conversion; ocr_done is staged by the orchestrator
+    only from a successful result. A requested-OCR failure is a failed
+    result and never falls through to the generic converter.
     """
     import tempfile
 
     import fitz
 
-    converted_rels: list[str] = []
-    to_ocr = pending_ocr_rels(root, ocr_index)
     if not to_ocr:
         print("\nOCR: nothing to do (all flagged PDFs already converted).")
-        return converted_rels
+        return []
 
+    def _all_failed(detail: str) -> list[ProcessingResult]:
+        return [
+            ProcessingResult(rel, STATUS_FAILED, "ocr", detail=detail)
+            for rel in to_ocr
+        ]
+
+    results: list[ProcessingResult] = []
     print(f"\nOCRing {len(to_ocr)} PDF(s) with focr (one batched model load)...")
     with tempfile.TemporaryDirectory(prefix="focr-batch-") as tmp:
         tmp_dir = Path(tmp)
@@ -356,20 +461,41 @@ def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
                     paths.append(png)
                 doc.close()
             except Exception as exc:
+                results.append(
+                    ProcessingResult(
+                        rel, STATUS_FAILED, "ocr", detail=f"rasterizing failed: {exc}"
+                    )
+                )
                 print(f"\tERROR rasterizing {rel}: {exc}")
                 continue
             if not paths:
+                results.append(
+                    ProcessingResult(
+                        rel, STATUS_FAILED, "ocr", detail="PDF has no pages"
+                    )
+                )
                 print(f"\tERROR rasterizing {rel}: PDF has no pages")
                 continue
             pages_by_rel[rel] = paths
 
         page_paths = [p for paths in pages_by_rel.values() for p in paths]
         if not page_paths:
-            return converted_rels
-        print(f"\tRasterized {len(page_paths)} page(s) from {len(pages_by_rel)} PDF(s); running focr ocr-batch...")
+            return results
+        print(
+            f"\tRasterized {len(page_paths)} page(s) from {len(pages_by_rel)} PDF(s); running focr ocr-batch..."
+        )
 
         # 2. One focr process for the whole batch. stderr passes through so
         # focr's per-page progress stays visible; stdout carries the JSON.
+        remaining = list(pages_by_rel)
+
+        def _remaining_failed(detail: str) -> list[ProcessingResult]:
+            print(f"\tERROR: {detail}")
+            return results + [
+                ProcessingResult(rel, STATUS_FAILED, "ocr", detail=detail)
+                for rel in remaining
+            ]
+
         try:
             proc = subprocess.run(
                 ["focr", "ocr-batch", *map(str, page_paths), "--json"],
@@ -377,84 +503,189 @@ def run_ocr(root: Path, ocr_index: dict[str, dict[str, str]]) -> list[str]:
                 text=True,
             )
         except FileNotFoundError:
-            print(
-                "\tERROR: focr command not found. Install Franken OCR from "
+            return _remaining_failed(
+                "focr command not found. Install Franken OCR from "
                 "https://github.com/Dicklesworthstone/franken_ocr and make sure "
                 "`focr` is on PATH."
             )
-            return converted_rels
         if proc.returncode != 0:
-            print(f"\tERROR: focr ocr-batch exited {proc.returncode}")
-            return converted_rels
+            return _remaining_failed(f"focr ocr-batch exited {proc.returncode}")
         try:
-            results = _parse_focr_batch_results(proc.stdout)
+            focr_results = _parse_focr_batch_results(proc.stdout)
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            print(f"\tERROR parsing focr ocr-batch JSON: {exc}")
-            return converted_rels
+            return _remaining_failed(f"parsing focr ocr-batch JSON: {exc}")
 
-        # 3. Reassemble per-PDF markdown; mark done only on full success.
+        # 3. Reassemble per-PDF markdown; a PDF succeeds only when every
+        # page OCRed, then follows the standard sidecar-finalization path.
         for rel, paths in pages_by_rel.items():
             page_md: list[str] = []
             failed: list[str] = []
             for png in paths:
-                r = results.get(str(png))
+                r = focr_results.get(str(png))
                 if r is not None and r.get("ok") and r.get("markdown") is not None:
                     page_md.append(r["markdown"])
                 else:
                     err = (r or {}).get("error", "no result returned")
                     failed.append(f"{png.name}: {err}")
             if failed:
-                print(f"\tERROR OCRing {rel} ({len(failed)}/{len(paths)} page(s) failed): {failed[0]}")
+                detail = f"{len(failed)}/{len(paths)} page(s) failed: {failed[0]}"
+                results.append(
+                    ProcessingResult(rel, STATUS_FAILED, "ocr", detail=detail)
+                )
+                print(f"\tERROR OCRing {rel} ({detail})")
                 continue
-            out = converted_path(root / rel, DEFAULT_DOCX_CONVERTER)
-            out.write_text("\n\n".join(page_md), encoding="utf-8")
-            ocr_index[rel]["ocr_done"] = "true"
-            converted_rels.append(rel)
-            print(f"\t{rel} -> {out.name}")
-    return converted_rels
+            result = _finalize_sidecar(
+                root,
+                root / rel,
+                hashes[rel],
+                "\n\n".join(page_md),
+                "ocr",
+                ocr_done=True,
+            )
+            results.append(result)
+            if result.status == STATUS_CONVERTED:
+                print(f"\t{rel} -> {converted_path(root / rel).name}")
+            else:
+                print(f"\tERROR OCRing {rel}: {result.detail}")
+    return results
 
 
 # ---------------------------------------------------------------------------
-# Token indexing
+# Certification, staging, reconciliation, persistence
 # ---------------------------------------------------------------------------
 
 
-def index_tokens(
+def is_certified_unchanged(
     root: Path,
-    hashes: dict[str, str],
+    rel: str,
+    fresh_hash: str,
+    hash_index: dict[str, str],
     token_index: dict[str, int],
-    converted_rels: list[str],
-    docx_converter: str,
+) -> bool:
+    """True only for: fresh CRC32 equal to the certified hash, an existing
+    sidecar, and a valid token row. File metadata is never a substitute."""
+    if hash_index.get(rel) != fresh_hash:
+        return False
+    sidecar = converted_path(root / rel)
+    if not sidecar.exists():
+        return False
+    return _rel(root, sidecar) in token_index
+
+
+def stage_results(
+    results: list[ProcessingResult],
+    hash_index: dict[str, str],
+    token_index: dict[str, int],
+    ocr_index: dict[str, dict[str, str]],
 ) -> None:
-    """Count tokens for new/changed converted files and update token_index in-place."""
-    needs_count: list[str] = []
-    for rel in hashes:
-        out = converted_path(root / rel, docx_converter)
-        conv_rel = str(out.relative_to(root))
-        if rel in converted_rels or conv_rel not in token_index:
-            if out.exists():
-                needs_count.append(rel)
+    """Stage hash/token/OCR rows from successful conversions only."""
+    for r in results:
+        if r.status != STATUS_CONVERTED:
+            continue
+        hash_index[r.source_rel] = r.file_hash
+        token_index[r.sidecar_rel] = r.tokens
+        if r.ocr_done and r.source_rel in ocr_index:
+            ocr_index[r.source_rel]["ocr_done"] = "true"
 
-    if not needs_count:
-        return
 
-    print(f"\nCounting tokens for {len(needs_count)} file(s)...")
+def reconcile_indexes(
+    root: Path,
+    discovered_rels: set[str],
+    hash_index: dict[str, str],
+    token_index: dict[str, int],
+    ocr_index: dict[str, dict[str, str]],
+) -> None:
+    """Prune rows only for sources that are no longer discovered.
 
-    def _count(rel: str) -> tuple[str, int]:
-        out = converted_path(root / rel, docx_converter)
-        conv_rel = str(out.relative_to(root))
-        tokens = count_tokens(out)
-        return conv_rel, tokens
+    Discovery determines existence; a discovered-but-unhashable source keeps
+    its prior hash, token, and OCR rows and any existing sidecar.
+    """
+    expected_sidecars = set()
+    for rel in discovered_rels:
+        try:
+            expected_sidecars.add(_rel(root, converted_path(root / rel)))
+        except ValueError:
+            pass
+    for rel in [r for r in hash_index if r not in discovered_rels]:
+        del hash_index[rel]
+    for rel in [r for r in token_index if r not in expected_sidecars]:
+        del token_index[rel]
+    discovered_pdfs = {
+        rel for rel in discovered_rels if Path(rel).suffix.lower() == ".pdf"
+    }
+    for rel in [r for r in ocr_index if r not in discovered_pdfs]:
+        del ocr_index[rel]
 
-    with ThreadPoolExecutor() as pool:
-        futures = {pool.submit(_count, rel): rel for rel in needs_count}
-        for future in as_completed(futures):
-            rel = futures[future]
-            try:
-                conv_rel, tokens = future.result()
-                token_index[conv_rel] = tokens
-            except Exception as exc:
-                print(f"\tERROR counting tokens for {rel}: {exc}")
+
+def persist_indexes(
+    root: Path,
+    hash_index: dict[str, str],
+    token_index: dict[str, int],
+    ocr_index: dict[str, dict[str, str]],
+) -> list[str]:
+    """Atomically write the indexes: token, then OCR, then hash last.
+
+    The hash index is the certification marker; writing it last means an
+    interrupted run leaves sidecar/token rows ahead of the hash index,
+    which causes reconversion rather than trusting stale output.
+    """
+    errors: list[str] = []
+    for name, save in (
+        (TOKEN_INDEX_FILENAME, lambda: save_token_index(root, token_index)),
+        (OCR_INDEX_FILENAME, lambda: save_ocr_index(root, ocr_index)),
+        (HASH_INDEX_FILENAME, lambda: save_hash_index(root, hash_index)),
+    ):
+        try:
+            save()
+        except Exception as exc:
+            errors.append(f"writing {name} failed: {type(exc).__name__}: {exc}")
+    return errors
+
+
+def summarize(
+    results: list[ProcessingResult],
+    token_index: dict[str, int],
+    ocr_index: dict[str, dict[str, str]],
+    index_errors: list[str],
+) -> int:
+    """Print the summary from ProcessingResult statuses; return exit code."""
+    counts = {
+        status: sum(1 for r in results if r.status == status)
+        for status in (
+            STATUS_UNCHANGED,
+            STATUS_CONVERTED,
+            STATUS_FAILED,
+            STATUS_DEFERRED_FOR_OCR,
+        )
+    }
+    needs_ocr = sum(
+        1 for row in ocr_index.values() if row["verdict"] in NEEDS_OCR_VERDICTS
+    )
+    ocr_done = sum(1 for row in ocr_index.values() if row.get("ocr_done") == "true")
+    total_tokens = sum(token_index.values())
+
+    print(
+        f"\nDone. {len(results)} office documents indexed: "
+        f"{counts[STATUS_CONVERTED]} converted, {counts[STATUS_UNCHANGED]} unchanged, "
+        f"{counts[STATUS_FAILED]} failed, {counts[STATUS_DEFERRED_FOR_OCR]} deferred for OCR."
+    )
+    print(
+        f"PDFs classified: {len(ocr_index)}, of which {needs_ocr} flagged needs_ocr "
+        f"({ocr_done} OCR-converted)."
+    )
+    print(f"Total tokens across converted files: {total_tokens:,}")
+    print(
+        f"Indices written to {HASH_INDEX_FILENAME}, {TOKEN_INDEX_FILENAME}, "
+        f"and {OCR_INDEX_FILENAME}"
+    )
+    for r in results:
+        if r.status == STATUS_FAILED:
+            print(f"\tFAILED {r.source_rel}: {r.detail}")
+    for err in index_errors:
+        print(f"\tFAILED {err}")
+    if counts[STATUS_FAILED] or index_errors:
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +706,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main():
+def main() -> int:
     args = parse_args()
     root = Path.cwd()
     caption_output_dir = root / CAPTION_OUTPUT_DIRNAME
@@ -491,113 +722,100 @@ def main():
     nd_vars = ("MATTERS_DB", "ND_API_KEY", "NDHELPER_URL")
     if all(os.getenv(var) for var in nd_vars):
         print("Netdocs access with\n\tuv run python nd.py -h")
-    
+
     # 1. Load existing indices
     hash_index = load_hash_index(root)
     token_index = load_token_index(root)
     ocr_index = load_ocr_index(root)
 
-    # 2. Discover source files (skip dot-prefixed directories and temp files)
-    def _eligible_source(p: Path) -> bool:
-        rel_parts = p.relative_to(root).parts
-        return (
-            not any(part.startswith(".") for part in rel_parts[:-1])
-            and not p.name.startswith("~")
-            and p.suffix.lower() in SOURCE_SUFFIXES
+    # 2. Discover source files; notice (but never convert) .mbx files
+    sources, mbx_files = discover_sources(root)
+    if mbx_files:
+        print(
+            f"\nNotice: {len(mbx_files)} .mbx file(s) found. The .mbx extension is "
+            "ambiguous (Eudora/Outlook Express binary formats are incompatible "
+            "with Unix mbox), so these are not converted. Convert them manually "
+            "(e.g., export to .mbox or .eml) if their contents are needed:"
         )
+        for p in mbx_files:
+            print(f"\t{_rel(root, p)}")
 
-    sources = sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file() and _eligible_source(p)
-    )
+    discovered_rels = {_rel(root, src) for src in sources}
+    results: list[ProcessingResult] = []
 
     if not sources:
         print("\nNo office documents found.")
-        save_hash_index(root, hash_index)
-        save_token_index(root, token_index)
-        return
+    else:
+        # 3. Hash all source files in parallel; failures preserve prior state
+        print(f"\nHashing {len(sources)} source file(s)...")
+        hashes, hash_failures = hash_sources(root, sources)
+        results.extend(hash_failures)
+        for r in hash_failures:
+            print(f"\tERROR hashing {r.source_rel}: {r.detail}")
 
-    # 3. Hash all source files in parallel
-    print(f"\nHashing {len(sources)} source file(s)...")
-    hashes: dict[str, str] = {}
-    with ThreadPoolExecutor() as pool:
-        futures = {
-            pool.submit(hash_file, src): src for src in sources
-        }
-        for future in as_completed(futures):
-            src = futures[future]
-            rel = str(src.relative_to(root))
-            try:
-                hashes[rel] = future.result()
-            except Exception as exc:
-                print(f"\tERROR hashing {rel}: {exc}")
+        # 4. Classify new/changed PDFs (flags needs_ocr in .ocr_index.csv)
+        pdf_rels = sorted(
+            rel for rel in hashes if Path(rel).suffix.lower() == ".pdf"
+        )
+        classify_failures = classify_pdfs(root, pdf_rels, hashes, ocr_index)
+        results.extend(classify_failures)
+        excluded = {r.source_rel for r in results}
 
-    # 4. Classify new/changed PDFs (flags needs_ocr in .ocr_index.csv)
-    classify_pdfs(root, sources, hashes, ocr_index)
-    pending_ocr = pending_ocr_rels(root, ocr_index)
-    print(f"\nDocuments that may need OCR: {len(pending_ocr)}")
-    for rel in pending_ocr:
-        print(f"\t{rel}")
-    if pending_ocr and not args.ocr:
-        print("\tAsk the user before running `uv run startup.py --ocr`; OCR can take a long time.")
+        pending_ocr = [
+            rel
+            for rel in pending_ocr_rels(root, ocr_index)
+            if rel in hashes and rel not in excluded
+        ]
+        print(f"\nDocuments that may need OCR: {len(pending_ocr)}")
+        for rel in pending_ocr:
+            print(f"\t{rel}")
 
-    # 4b. With --ocr, run focr on flagged PDFs not yet successfully converted
-    ocr_converted_rels: list[str] = []
-    if args.ocr:
-        ocr_converted_rels = run_ocr(root, ocr_index)
+        # 4b. Pending-OCR PDFs never reach the generic converter. Without
+        # --ocr they are deferred (consent required); with --ocr they go
+        # through focr, and a requested-OCR failure stays a failure.
+        if pending_ocr and not args.ocr:
+            print(
+                "\tAsk the user before running `uv run startup.py --ocr`; OCR can take a long time."
+            )
+            results.extend(
+                ProcessingResult(rel, STATUS_DEFERRED_FOR_OCR, "ocr")
+                for rel in pending_ocr
+            )
+        elif args.ocr:
+            results.extend(run_ocr(root, pending_ocr, hashes))
+        handled = {r.source_rel for r in results}
 
-    # 5. Convert files with changed/new hashes
-    converted_rels = convert_files(
-        root,
-        sources,
-        hashes,
-        hash_index,
-        DEFAULT_DOCX_CONVERTER,
-        skip_rels=set(ocr_converted_rels),
-    )
-    converted_rels.extend(ocr_converted_rels)
+        # 5. Certify unchanged sources; convert the rest through the router
+        to_convert: list[Path] = []
+        for src in sources:
+            rel = _rel(root, src)
+            if rel in handled or rel not in hashes:
+                continue
+            if is_certified_unchanged(root, rel, hashes[rel], hash_index, token_index):
+                results.append(
+                    ProcessingResult(
+                        rel,
+                        STATUS_UNCHANGED,
+                        route_for(src),
+                        _rel(root, converted_path(src)),
+                        hashes[rel],
+                    )
+                )
+            else:
+                to_convert.append(src)
+        results.extend(convert_sources(root, to_convert, hashes))
 
-    # 6. Update hash index for all current files
-    for rel, h in hashes.items():
-        hash_index[rel] = h
+        # 6. Stage successful results into the indexes
+        stage_results(results, hash_index, token_index, ocr_index)
 
-    # 7. Count tokens for new/changed converted files
-    index_tokens(root, hashes, token_index, converted_rels, DEFAULT_DOCX_CONVERTER)
+    # 7. Prune rows only for sources no longer discovered, then persist all
+    # three indexes (token, OCR, hash last) even when nothing was found.
+    reconcile_indexes(root, discovered_rels, hash_index, token_index, ocr_index)
+    index_errors = persist_indexes(root, hash_index, token_index, ocr_index)
 
-    # 8. Prune stale entries
-    stale_hash = [rel for rel in hash_index if rel not in hashes]
-    for rel in stale_hash:
-        del hash_index[rel]
-
-    valid_converted = set()
-    for rel in hashes:
-        try:
-            conv_rel = str(converted_path(root / rel, DEFAULT_DOCX_CONVERTER).relative_to(root))
-            valid_converted.add(conv_rel)
-        except ValueError:
-            pass
-    stale_token = [rel for rel in token_index if rel not in valid_converted]
-    for rel in stale_token:
-        del token_index[rel]
-
-    # 9. Save indices
-    save_hash_index(root, hash_index)
-    save_token_index(root, token_index)
-    save_ocr_index(root, ocr_index)
-
-    # 10. Summary
-    total_tokens = sum(token_index.values())
-    skipped = len(sources) - len(converted_rels)
-    needs_ocr = sum(
-        1 for row in ocr_index.values() if row["verdict"] in NEEDS_OCR_VERDICTS
-    )
-    print(f"\nDone. {len(sources)} office documents indexed, {len(converted_rels)} converted, {skipped} unchanged.")
-    ocr_done = sum(1 for row in ocr_index.values() if row.get("ocr_done") == "true")
-    print(f"PDFs classified: {len(ocr_index)}, of which {needs_ocr} flagged needs_ocr ({ocr_done} OCR-converted).")
-    print(f"Total tokens across converted files: {total_tokens:,}")
-    print(f"Indices written to {HASH_INDEX_FILENAME}, {TOKEN_INDEX_FILENAME}, and {OCR_INDEX_FILENAME}")
+    # 8. Summary and exit status from ProcessingResult statuses
+    return summarize(results, token_index, ocr_index, index_errors)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

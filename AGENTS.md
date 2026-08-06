@@ -38,16 +38,27 @@ Then proceed to the main task.
 
 ### 4.2 startup.py (for documents)
 
-`startup.py` converts office documents and maintains indexes for the working folder:
-- `.pdf` → `.pdf.md`
-- `.docx` → `.docx.md`
+`startup.py` converts office documents and emails to Markdown sidecars named `<original-filename>.<extension>.md` and maintains indexes for the working folder:
+
+| Input | Converter | Notes |
+|---|---|---|
+| `.docx` → `.docx.md` | AnyDoc (`firecrawl-anydoc`, local) | |
+| `.pdf` → `.pdf.md` | MarkItDown `[pdf]` | Retained for PDFs only: AnyDoc v0.1.3 failed the PDF corpus gate |
+| `.eml`, `.emlx` → `.md` | Python `email` module | Headers + plain-text body first |
+| `.msg`, `.oft` → `.md` | `extract-msg` | Body priority: plain text, then HTML, then RTF text; attachment filenames listed but contents/embedded messages are not converted |
+| `.mht`, `.mhtml` → `.md` | Python `email` + `markdownify` | HTML part is authoritative; plain-text fallback only if no HTML part |
+| `.mbox` → `.md` | Python `mailbox` | Unix mbox only; messages rendered in file order, identical to standalone `.eml` |
+
+All email formats share one renderer, so the header block format is identical across routes. `.mbx` is **not** supported (the extension is ambiguous between incompatible formats); startup prints a notice listing any `.mbx` files so the user can convert them manually.
 
 It outputs:
-- `.hash_index.csv` (file hashes for change detection)
+- `.hash_index.csv` (file hashes for change detection; written last as the certification marker)
 - `.token_index.csv` (token counts per converted file)
 - `.ocr_index.csv` (PDF OCR classification and status, including `verdict` and `ocr_done`)
 
-It also reports any PDFs that may need OCR. If OCR is needed, ask the user before running `uv run startup.py --ocr`.
+It also reports any PDFs that may need OCR. If OCR is needed, ask the user before running `uv run startup.py --ocr`. PDFs pending OCR are never sent to the generic PDF converter.
+
+Do not edit source files while `startup.py` is running; changes made mid-run are detected and fail that file's conversion, and it is retried on the next run.
 
 Procedure:
 1. **Preferred input = already-converted file**

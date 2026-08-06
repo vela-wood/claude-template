@@ -137,7 +137,46 @@ uv run startup.py
 - tells you whether NetDocs access looks configured;
 - flags any PDFs that look like scanned images and may need **OCR** (text recognition).
 
+Under the hood, Word documents are converted by **AnyDoc** (a fast local converter), PDFs by **MarkItDown**, and Outlook emails (`.msg`, `.oft`) by **extract-msg**. Supported email formats are `.eml`, `.emlx`, `.msg`, `.oft`, `.mht`, `.mhtml`, and `.mbox`; every email is rendered with the same header block (Subject, From, To, CC, Date), and Outlook messages also list attachment *names* (attachment contents are not converted). For Outlook messages the body is taken from plain text first, then HTML, then RTF; for `.mht`/`.mhtml` saved web pages the HTML content is used first. `.mbx` files are **not** converted — that extension is ambiguous between incompatible mailbox formats — but `startup.py` lists any it finds so you can export them to `.mbox` or `.eml` yourself.
+
+### Why PDFs still use MarkItDown (and when to switch to AnyDoc)
+
+PDFs are deliberately **not** converted with AnyDoc yet, because of a silent text-loss bug in its PDF parser:
+
+- **The bug.** AnyDoc's `pdf-inspector` dependency (≤0.1.7) pre-strips `%` comments from PDF content streams but ignores backslash escapes inside string literals. An escaped `\)` makes it think the string closed, so a later `%` glyph inside the string is treated as a comment and the rest of the line is **silently deleted** — no error, no OCR flag.
+- **Why it hits this practice hard.** macOS Quartz PDFs (Word for Mac → PDF, i.e. most redlines) assign subset-font codes in first-use order, so common letters land on the `%`, `(`, `)` bytes. Worst observed case: ~60% of a redline silently dropped, including arbitration and indemnity provisions.
+- **Upstream status (2026-08-06).** Fixed in `firecrawl/pdf-inspector` PR [#259](https://github.com/firecrawl/pdf-inspector/pull/259) (merged 2026-08-04, closes issue #258), but **not yet in any release**: crates.io `pdf-inspector` is still 0.1.7 (pre-fix), and `firecrawl-anydoc` 0.1.6 still pins it.
+- **Before switching PDFs to AnyDoc:** (1) confirm the new `firecrawl-anydoc` sdist's `Cargo.lock` pins `pdf-inspector` **> 0.1.7** — a version bump alone is not enough (0.1.6 shipped after the fix merged and still doesn't include it); (2) re-run the benchmark below and the full PDF corpus gate.
+
+**Benchmark** (`benchmark/` — 25 PDFs from the Juno matter; metric: unique ground-truth words missing from converter output, vs. a PyMuPDF text-layer baseline; run 2026-08-06 on an M-series Mac):
+
+| Converter | Mean missing | Worst file | Files >2% missing | Total time |
+|---|---|---|---|---|
+| MarkItDown (current PDF route) | 0.31% | 3.7% | 2 | 23.0 s |
+| AnyDoc 0.1.3 (pinned, buggy) | 1.13% | **27.0%** | 1 | 0.5 s |
+| AnyDoc + pdf-inspector #259 fix | **0.09%** | 1.4% | 0 | **0.5 s** |
+
+Notes: AnyDoc 0.1.3's 27% loss is `state_court_archive/Alice DTPA letter.pdf`, a Quartz PDF — exactly the bug above; the patched build recovers it to 0.9%. MarkItDown's two >2% files are tokenization artifacts (hyphenation/whitespace), not real loss. The patched AnyDoc is ~45× faster than MarkItDown, which is the payoff for switching once a fixed release ships.
+
+To re-run (per-file TSV: path, pages, unique words, missing rate, seconds):
+
+```sh
+uv run python benchmark/bench.py markitdown benchmark
+uv run python benchmark/bench.py anydoc benchmark
+```
+
+**DOCX benchmark** (for contrast — the `.docx` route already uses AnyDoc and is unaffected by the PDF bug). Same metric over 189 substantive `.docx` files across all matters, ground truth taken from each file's raw `word/document.xml` (run 2026-08-06):
+
+| Converter | Mean missing | Worst file | Files >2% missing | Total time |
+|---|---|---|---|---|
+| AnyDoc (current DOCX route) | 0.024% | 0.9% | 0 | **0.1 s** |
+| MarkItDown (`[docx]` extra, not installed here) | 0.025% | 0.9% | 0 | 16.2 s |
+
+The two converters produce identical worst-file lists at identical rates — the sub-1% residuals are ground-truth artifacts (text boxes/fields counted in the XML), not conversion loss. Fidelity is equal; AnyDoc is ~160× faster. Re-run with `uv run python benchmark/bench_docx.py anydoc <dir>` (the `markitdown` mode needs `markitdown[docx]`, which this repo intentionally does not install).
+
 > **About OCR:** scanned PDFs have no selectable text, so they need OCR before the AI can read them. OCR can be slow, so it does **not** run automatically. If `startup.py` reports PDFs that need it, ask before running `uv run startup.py --ocr`.
+
+> **One caution:** don't edit or replace source files while `startup.py` is running. If a file changes mid-run, its conversion is failed on purpose and retried on the next run.
 
 **When reading documents,** prefer the converted `.md` file over the original — for example, open `contract.pdf.md` rather than `contract.pdf`. The Markdown version is what the AI reads and searches.
 
