@@ -52,3 +52,4 @@ of the same pair on the same day) it appends `_2`, `_3`, … rather than clobber
 - Both inputs must be `.docx`. If a source is a PDF or other format, flag this to the user — do not attempt lossy conversions to force a compare.
 - Always write a new file; never overwrite the inputs (per repo file-versioning rules).
 - After generating, report the output path to the user. Optionally verify with `adeu extract` on the output to sanity-check the tracked changes.
+- If the engine hits the Docxodus "FormatChanged" bug, the script automatically retries with format-change detection disabled and prints a notice. In that case format-only changes (bolding, borders, etc.) are not shown as tracked changes — tell the user when reporting the output.

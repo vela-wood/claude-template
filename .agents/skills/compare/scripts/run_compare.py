@@ -88,16 +88,41 @@ def main(argv: list[str]) -> int:
 
     # Hand the engine bytes, not paths: run_redline() unconditionally deletes the
     # paths it is given, so passing Path objects destroys both source documents.
+    original_bytes = args.original.read_bytes()
+    modified_bytes = args.modified.read_bytes()
     try:
         redline_bytes, _stdout, stderr = engine.run_redline(
-            args.author, args.original.read_bytes(), args.modified.read_bytes()
+            args.author, original_bytes, modified_bytes
         )
     except subprocess.CalledProcessError as exc:
-        print(f"Compare failed: engine exited {exc.returncode}.", file=sys.stderr)
-        for stream in (exc.stderr, exc.stdout):
-            if stream:
-                print(stream.strip(), file=sys.stderr)
-        return 1
+        # Docxodus bug: format-only differences can surface an unhandled
+        # "FormatChanged" status and abort. Retry without format-change
+        # detection; text changes are still fully tracked.
+        engine_output = "\n".join(s for s in (exc.stderr, exc.stdout) if s)
+        if "FormatChanged" not in engine_output:
+            print(f"Compare failed: engine exited {exc.returncode}.", file=sys.stderr)
+            if engine_output:
+                print(engine_output.strip(), file=sys.stderr)
+            return 1
+        print(
+            "Engine hit the FormatChanged bug; retrying with format-change "
+            "detection disabled. Format-only changes (e.g. bolding, borders) "
+            "will not appear as tracked changes.",
+            file=sys.stderr,
+        )
+        try:
+            redline_bytes, _stdout, stderr = engine.run_redline(
+                args.author,
+                original_bytes,
+                modified_bytes,
+                detect_format_changes=False,
+            )
+        except subprocess.CalledProcessError as exc2:
+            print(f"Compare failed: engine exited {exc2.returncode}.", file=sys.stderr)
+            for stream in (exc2.stderr, exc2.stdout):
+                if stream:
+                    print(stream.strip(), file=sys.stderr)
+            return 1
 
     if stderr:
         print(stderr, file=sys.stderr)
