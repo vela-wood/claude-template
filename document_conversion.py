@@ -1,10 +1,7 @@
 """Suffix-routed document-to-Markdown conversion.
 
 Routes (see AGENTS.md / README.md):
-  .docx          -> AnyDoc (firecrawl-anydoc, local Python API)
-  .pdf           -> MarkItDown [pdf] (GATED: AnyDoc v0.1.3 drops substantive
-                    text from some digital PDFs; see the migration plan's
-                    corpus gate. Revisit when upstream fixes PDF extraction.)
+  .docx/.pdf     -> AnyDoc (firecrawl-anydoc, local Python API)
   .eml/.emlx     -> Python email module (existing rendering, unchanged)
   .msg/.oft      -> extract-msg + shared renderer
   .mht/.mhtml    -> Python email module + markdownify (HTML part first)
@@ -23,7 +20,6 @@ notices .mbx files so the user can convert them manually.
 import email as _email
 import mailbox
 import re
-import threading
 from email import policy as _policy
 from pathlib import Path
 
@@ -32,7 +28,7 @@ MSG_SUFFIXES = {".msg", ".oft"}
 MHT_SUFFIXES = {".mht", ".mhtml"}
 MBOX_SUFFIXES = {".mbox"}
 EMAIL_SUFFIXES = NATIVE_EMAIL_SUFFIXES | MSG_SUFFIXES | MHT_SUFFIXES | MBOX_SUFFIXES
-ANYDOC_SUFFIXES = {".docx"}
+ANYDOC_SUFFIXES = {".docx", ".pdf"}
 PDF_SUFFIXES = {".pdf"}
 SOURCE_SUFFIXES = ANYDOC_SUFFIXES | PDF_SUFFIXES | EMAIL_SUFFIXES
 MBX_SUFFIX = ".mbx"
@@ -267,28 +263,8 @@ def _convert_msg(source: Path) -> str:
 def _convert_anydoc(source: Path) -> str:
     import anydoc
 
-    # AnyDoc v0.1.3 exposes a module-level function, not a converter object.
+    # AnyDoc exposes a module-level function, not a converter object.
     return anydoc.to_markdown(str(source))
-
-
-# ---------------------------------------------------------------------------
-# .pdf — MarkItDown, retained until AnyDoc's PDF omissions are fixed upstream
-# ---------------------------------------------------------------------------
-
-_markitdown_lock = threading.Lock()
-_markitdown_instance = None
-
-
-def _convert_pdf(source: Path) -> str:
-    global _markitdown_instance
-
-    with _markitdown_lock:
-        if _markitdown_instance is None:
-            from markitdown import MarkItDown
-
-            _markitdown_instance = MarkItDown()
-    result = _markitdown_instance.convert(str(source))
-    return result.text_content
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +273,6 @@ def _convert_pdf(source: Path) -> str:
 
 _CONVERTERS = {
     **{s: _convert_anydoc for s in ANYDOC_SUFFIXES},
-    **{s: _convert_pdf for s in PDF_SUFFIXES},
     **{s: _convert_eml for s in NATIVE_EMAIL_SUFFIXES},
     **{s: _convert_msg for s in MSG_SUFFIXES},
     **{s: _convert_mht for s in MHT_SUFFIXES},
@@ -310,8 +285,6 @@ def route_for(source: Path) -> str:
     suffix = source.suffix.lower()
     if suffix in ANYDOC_SUFFIXES:
         return "anydoc"
-    if suffix in PDF_SUFFIXES:
-        return "markitdown-pdf"
     if suffix in NATIVE_EMAIL_SUFFIXES:
         return "email"
     if suffix in MSG_SUFFIXES:

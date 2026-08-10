@@ -31,7 +31,7 @@ TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 def test_route_for_all_suffixes(tmp_path):
     assert dc.route_for(tmp_path / "a.docx") == "anydoc"
-    assert dc.route_for(tmp_path / "a.pdf") == "markitdown-pdf"
+    assert dc.route_for(tmp_path / "a.pdf") == "anydoc"
     assert dc.route_for(tmp_path / "a.eml") == "email"
     assert dc.route_for(tmp_path / "a.EMLX") == "email"
     assert dc.route_for(tmp_path / "a.msg") == "extract-msg"
@@ -337,7 +337,7 @@ def test_docx_nonascii_content(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# .pdf (gated MarkItDown route)
+# .pdf via AnyDoc
 # ---------------------------------------------------------------------------
 
 
