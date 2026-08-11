@@ -18,10 +18,13 @@ CLI: uv run pdfcheck.py [root] [-o output.csv]
 
 import argparse
 import csv
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz
+
+from fsio import atomic_write_text
 
 fitz.TOOLS.mupdf_display_errors(False)
 
@@ -113,7 +116,7 @@ def load_ocr_index(root: Path) -> dict[str, dict[str, str]]:
     index: dict[str, dict[str, str]] = {}
     if not index_path.exists():
         return index
-    with open(index_path, newline="") as f:
+    with open(index_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             row["ocr_done"] = row.get("ocr_done") or ""
             index[row["file"]] = row
@@ -122,12 +125,12 @@ def load_ocr_index(root: Path) -> dict[str, dict[str, str]]:
 
 def save_ocr_index(root: Path, index: dict[str, dict[str, str]]) -> None:
     """Write .ocr_index.csv from {pdf_relative_path: row dict}."""
-    index_path = root / OCR_INDEX_FILENAME
-    with open(index_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_INDEX_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        for rel_path in sorted(index):
-            writer.writerow(index[rel_path])
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_INDEX_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for rel_path in sorted(index):
+        writer.writerow(index[rel_path])
+    atomic_write_text(root / OCR_INDEX_FILENAME, buf.getvalue(), newline="")
 
 
 def index_row(rel: str, file_hash: str, c: PdfClassification) -> dict[str, str]:
@@ -174,7 +177,7 @@ def main() -> None:
             rows.append(index_row(str(pdf.relative_to(root)), hash_file(pdf), c))
 
     if args.output:
-        with open(args.output, "w", newline="") as f:
+        with open(args.output, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=_INDEX_COLUMNS)
             writer.writeheader()
             writer.writerows(rows)
