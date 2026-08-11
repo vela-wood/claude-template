@@ -42,7 +42,7 @@ Then proceed to the main task.
 | Input | Converter | Notes |
 |---|---|---|
 | `.docx` → `.docx.md` | AnyDoc (`firecrawl-anydoc`, local) | |
-| `.pdf` → `.pdf.md` | AnyDoc (`firecrawl-anydoc`, local) | Uses the patched `0.1.7+vela.1` release that passed the PDF corpus gate |
+| `.pdf` → `.pdf.md` | AnyDoc (`firecrawl-anydoc`, local) | Uses official 0.1.8, which includes the `pdf-inspector` escaped-comment fix and passed the PDF corpus gate |
 | `.eml`, `.emlx` → `.md` | Python `email` module | Headers + plain-text body first |
 | `.msg`, `.oft` → `.md` | `extract-msg` | Body priority: plain text, then HTML, then RTF text; attachment filenames listed but contents/embedded messages are not converted |
 | `.mht`, `.mhtml` → `.md` | Python `email` + `markdownify` | HTML part is authoritative; plain-text fallback only if no HTML part |

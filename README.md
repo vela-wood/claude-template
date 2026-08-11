@@ -139,24 +139,24 @@ uv run startup.py
 
 Under the hood, Word documents and PDFs are converted by **AnyDoc** (a fast local converter), and Outlook emails (`.msg`, `.oft`) by **extract-msg**. Supported email formats are `.eml`, `.emlx`, `.msg`, `.oft`, `.mht`, `.mhtml`, and `.mbox`; every email is rendered with the same header block (Subject, From, To, CC, Date), and Outlook messages also list attachment *names* (attachment contents are not converted). For Outlook messages the body is taken from plain text first, then HTML, then RTF; for `.mht`/`.mhtml` saved web pages the HTML content is used first. `.mbx` files are **not** converted — that extension is ambiguous between incompatible mailbox formats — but `startup.py` lists any it finds so you can export them to `.mbox` or `.eml` yourself.
 
-### Patched AnyDoc PDF release
+### AnyDoc PDF release
 
-PDFs use Vela Wood's AnyDoc 0.1.7+vela.1 wheel release with the `pdf-inspector` fix:
+PDFs use the official AnyDoc 0.1.8 wheel release with the `pdf-inspector` fix:
 
 - **The bug.** AnyDoc's `pdf-inspector` dependency (≤0.1.7) pre-strips `%` comments from PDF content streams but ignores backslash escapes inside string literals. An escaped `\)` makes it think the string closed, so a later `%` glyph inside the string is treated as a comment and the rest of the line is **silently deleted** — no error, no OCR flag.
 - **Why it hits this practice hard.** macOS Quartz PDFs (Word for Mac → PDF, i.e. most redlines) assign subset-font codes in first-use order, so common letters land on the `%`, `(`, `)` bytes. Worst observed case: ~60% of a redline silently dropped, including arbitration and indemnity provisions.
-- **Release.** [`vela-wood/anydoc` tag `v0.1.7-vela.1`](https://github.com/vela-wood/anydoc/releases/tag/v0.1.7-vela.1) vendors the patched crate at `vendor/pdf-inspector` and publishes `firecrawl-anydoc==0.1.7+vela.1` ABI3 wheels for macOS, Linux, and Windows. One fork owns the patch and wheel release; there is no separate `pdf-inspector` fork.
-- **Pinning.** `pyproject.toml` pins the distinct wheel version. `uv.toml` points at an immutable, commit-pinned wheel index, and `uv.lock` records the SHA-256 hash of every platform wheel. Users install a wheel and do not need Rust.
+- **Release.** Official [`firecrawl/anydoc` v0.1.8](https://github.com/firecrawl/anydoc/releases/tag/v0.1.8) depends on `pdf-inspector` 0.1.8, which includes the escaped-comment fix from [`firecrawl/pdf-inspector` PR #259](https://github.com/firecrawl/pdf-inspector/pull/259). It publishes `firecrawl-anydoc==0.1.8` ABI3 wheels for macOS, Linux, and Windows.
+- **Pinning.** `pyproject.toml` pins the official PyPI release, and `uv.lock` records the SHA-256 hash of every platform wheel. Users install a wheel and do not need Rust.
 
-**Benchmark** (`benchmark/` — 25 PDFs from the Juno matter; metric: unique ground-truth words missing from converter output, vs. a PyMuPDF text-layer baseline; run 2026-08-06 on an M-series Mac):
+**Benchmark** (`benchmark/` — 25 PDFs from the Juno matter; metric: unique ground-truth words missing from converter output, vs. a PyMuPDF text-layer baseline; comparison run 2026-08-06 on an M-series Mac, with official AnyDoc 0.1.8 re-run 2026-08-11):
 
 | Converter | Mean missing | Worst file | Files >2% missing | Total time |
 |---|---|---|---|---|
 | MarkItDown (former PDF route) | 0.31% | 3.7% | 2 | 23.0 s |
 | AnyDoc 0.1.3 (former pin, buggy) | 1.13% | **27.0%** | 1 | 0.5 s |
-| AnyDoc 0.1.7+vela.1 (current PDF route) | **0.09%** | 1.4% | 0 | **0.5 s** |
+| AnyDoc 0.1.8 (current PDF route) | **0.10%** | 1.4% | 0 | **0.6 s** |
 
-Notes: AnyDoc 0.1.3's 27% loss is `state_court_archive/Alice DTPA letter.pdf`, a Quartz PDF — exactly the bug above; the patched build recovers it to 0.9%. MarkItDown's two >2% files are tokenization artifacts (hyphenation/whitespace), not real loss. The released patched AnyDoc is ~45× faster than MarkItDown.
+Notes: AnyDoc 0.1.3's 27% loss is `state_court_archive/Alice DTPA letter.pdf`, a Quartz PDF — exactly the bug above; AnyDoc 0.1.8 recovers it to 0.9%. MarkItDown's two >2% files are tokenization artifacts (hyphenation/whitespace), not real loss. AnyDoc 0.1.8 is ~40× faster than MarkItDown.
 
 To re-run (per-file TSV: path, pages, unique words, missing rate, seconds):
 
