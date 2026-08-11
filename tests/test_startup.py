@@ -33,7 +33,7 @@ def run_main() -> int:
 
 def read_csv_dict(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        return list(csv.DictReader(l for l in f if not l.startswith("#")))
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +153,59 @@ def test_changed_content_reconverts_even_with_same_size(repo_tmp, capsys):
     assert run_main() == 0
     assert "1 converted, 0 unchanged" in capsys.readouterr().out
     assert "# BBBBBBB" in (repo_tmp / "a.eml.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Converter schema versioning
+# ---------------------------------------------------------------------------
+
+
+def test_pre_migration_hash_index_reads_as_stale_and_reconverts(repo_tmp, capsys):
+    """A .hash_index.csv written by main (plain file,hash rows, no schema
+    marker) must not certify anything, even when hashes match exactly."""
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    # Rewrite the index in the old main format: same rows, marker stripped
+    index = repo_tmp / ".hash_index.csv"
+    old_format = "".join(
+        line
+        for line in index.read_text(encoding="utf-8").splitlines(keepends=True)
+        if not line.startswith("#")
+    )
+    index.write_text(old_format, encoding="utf-8", newline="")
+
+    assert startup.load_hash_index(repo_tmp) == {}
+    assert run_main() == 0
+    assert "1 converted, 0 unchanged" in capsys.readouterr().out
+
+
+def test_current_schema_writes_marker_and_certifies_second_run(repo_tmp, capsys):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    first_line = (
+        (repo_tmp / ".hash_index.csv").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert first_line == f"#schema={startup.CONVERTER_SCHEMA_VERSION}"
+    assert run_main() == 0
+    assert "0 converted, 1 unchanged" in capsys.readouterr().out
+
+
+def test_bumped_schema_version_invalidates_certification(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    monkeypatch.setattr(
+        startup, "CONVERTER_SCHEMA_VERSION", startup.CONVERTER_SCHEMA_VERSION + 1
+    )
+    assert run_main() == 0
+    assert "1 converted, 0 unchanged" in capsys.readouterr().out
+    # after one run under the bumped version, certification works again
+    assert run_main() == 0
+    assert "0 converted, 1 unchanged" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +520,10 @@ def test_empty_tree_prunes_indexes_and_keeps_sidecars(repo_tmp, capsys):
     assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
     assert read_csv_dict(repo_tmp / ".token_index.csv") == []
     assert read_csv_dict(repo_tmp / ".ocr_index.csv") == []
-    # headers still written
-    assert (repo_tmp / ".hash_index.csv").read_text(encoding="utf-8").startswith("file,hash")
+    # schema marker and headers still written
+    assert (repo_tmp / ".hash_index.csv").read_text(encoding="utf-8").startswith(
+        f"#schema={startup.CONVERTER_SCHEMA_VERSION}\nfile,hash"
+    )
     assert orphan.read_text(encoding="utf-8") == "keep me"
 
 
@@ -485,6 +540,27 @@ def test_index_write_failure_exits_nonzero(repo_tmp, monkeypatch, capsys):
     assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"a.eml.md"}
     # hash index never appeared → next run reconverts (conservative)
     assert not (repo_tmp / ".hash_index.csv").exists()
+
+
+def test_token_write_failure_withholds_certification_marker(repo_tmp, monkeypatch):
+    """A failed token write must not be followed by a hash write: the stale
+    token row plus a fresh hash would certify a wrong token count forever."""
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    prior_hash_bytes = (repo_tmp / ".hash_index.csv").read_bytes()
+
+    def boom(root, index):
+        raise OSError("injected token write failure")
+
+    monkeypatch.setattr(startup, "save_token_index", boom)
+    errors = startup.persist_indexes(
+        repo_tmp, {"a.eml": "0badf00d"}, {"a.eml.md": 999}, {}
+    )
+    # hash index NOT updated: previous certification marker left untouched
+    assert (repo_tmp / ".hash_index.csv").read_bytes() == prior_hash_bytes
+    joined = " | ".join(errors)
+    assert "writing .token_index.csv failed" in joined
+    assert "withheld .hash_index.csv write" in joined
 
 
 @pytest.mark.parametrize("which", ["save_token_index", "save_ocr_index"])

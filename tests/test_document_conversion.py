@@ -137,6 +137,81 @@ def test_mht_uses_shared_renderer_header_block(tmp_path):
     assert "\n---\n" in out
 
 
+def make_related_mht(start: str | None, parts: list[tuple[bytes, str, bytes]]) -> bytes:
+    """multipart/related with per-part Content-IDs; parts = (type, cid, body).
+
+    Local builder: conftest's make_mht cannot express start/Content-ID.
+    """
+    ctype = b"Content-Type: multipart/related; boundary=RELBOUND"
+    if start is not None:
+        ctype += f'; start="<{start}>"'.encode()
+    rendered = []
+    for content_type, cid, body in parts:
+        rendered.append(
+            b"--RELBOUND\r\nContent-Type: " + content_type
+            + f"\r\nContent-ID: <{cid}>\r\n\r\n".encode()
+            + body
+            + b"\r\n"
+        )
+    return (
+        b"From: <Saved by Test>\r\n"
+        b"Subject: Saved Page\r\n"
+        b"Date: Tue, 04 Aug 2026 14:00:00 -0500\r\n"
+        b"MIME-Version: 1.0\r\n" + ctype + b"\r\n\r\n"
+        + b"".join(rendered)
+        + b"--RELBOUND--\r\n"
+    )
+
+
+def test_mht_start_parameter_selects_root_html_part(tmp_path):
+    src = tmp_path / "framed.mht"
+    src.write_bytes(
+        make_related_mht(
+            start="root@page",
+            parts=[
+                (b"text/html; charset=utf-8", "frame@page", b"<p>frame wrapper only</p>"),
+                (b"text/html; charset=utf-8", "root@page", b"<h1>Real Root</h1><p>Actual page content.</p>"),
+            ],
+        )
+    )
+    out = dc.convert_to_markdown(src)
+    assert "# Real Root" in out
+    assert "Actual page content." in out
+    assert "frame wrapper only" not in out
+
+
+def test_mht_without_start_parameter_keeps_first_html_part(tmp_path):
+    src = tmp_path / "nostart.mht"
+    src.write_bytes(
+        make_related_mht(
+            start=None,
+            parts=[
+                (b"text/html; charset=utf-8", "one@page", b"<p>first part wins</p>"),
+                (b"text/html; charset=utf-8", "two@page", b"<p>second part loses</p>"),
+            ],
+        )
+    )
+    out = dc.convert_to_markdown(src)
+    assert "first part wins" in out
+    assert "second part loses" not in out
+
+
+def test_mht_unmatched_start_falls_back_to_first_html_part(tmp_path):
+    src = tmp_path / "badstart.mht"
+    src.write_bytes(
+        make_related_mht(
+            start="missing@page",
+            parts=[
+                (b"text/html; charset=utf-8", "one@page", b"<p>first part wins</p>"),
+                (b"text/html; charset=utf-8", "two@page", b"<p>second part loses</p>"),
+            ],
+        )
+    )
+    out = dc.convert_to_markdown(src)
+    assert "first part wins" in out
+    assert "second part loses" not in out
+
+
 # ---------------------------------------------------------------------------
 # .mbox — each message identical to the same message as a standalone .eml
 # ---------------------------------------------------------------------------
@@ -300,6 +375,118 @@ def test_msg_filename_with_spaces_and_nonascii(tmp_path):
         body="b",
     )
     assert "# s" in dc.convert_to_markdown(src)
+
+
+# ---------------------------------------------------------------------------
+# HTML byte decoding — declared <meta> charset honored, fallbacks preserved
+# ---------------------------------------------------------------------------
+
+
+def test_decode_html_declared_shift_jis():
+    html = (
+        '<html><head><meta charset="shift_jis"></head>'
+        "<body><p>日本語の本文です。</p></body></html>"
+    ).encode("shift_jis")
+    assert "日本語の本文です。" in dc._decode_html_bytes(html)
+
+
+def test_decode_html_declared_windows_1251_http_equiv():
+    html = (
+        '<html><head><meta http-equiv="Content-Type" '
+        'content="text/html; charset=windows-1251"></head>'
+        "<body><p>Привет, мир!</p></body></html>"
+    ).encode("cp1251")
+    assert "Привет, мир!" in dc._decode_html_bytes(html)
+
+
+def test_decode_html_undeclared_utf8_unchanged():
+    assert dc._decode_html_bytes("<p>café ménu</p>".encode("utf-8")) == "<p>café ménu</p>"
+
+
+def test_decode_html_undeclared_cp1252_unchanged():
+    assert dc._decode_html_bytes(b"<p>caf\xe9</p>") == "<p>café</p>"
+
+
+def test_decode_html_unknown_declared_charset_falls_back():
+    assert (
+        dc._decode_html_bytes(b'<meta charset="not-a-charset"><p>caf\xe9</p>')
+        == '<meta charset="not-a-charset"><p>café</p>'
+    )
+
+
+def test_msg_html_body_declared_shift_jis(tmp_path):
+    html = (
+        '<html><head><meta charset="shift_jis"></head>'
+        "<body><h1>契約書</h1><p>本文はここにあります。</p></body></html>"
+    ).encode("shift_jis")
+    src = make_msg(
+        tmp_path / "sjis.msg",
+        subject="Sjis subject",
+        sender="A",
+        recipients=RECIPIENTS[:1],
+        html_body=html,
+    )
+    out = dc.convert_to_markdown(src)
+    assert "# 契約書" in out
+    assert "本文はここにあります。" in out
+
+
+# ---------------------------------------------------------------------------
+# RTF escape decoding — last-resort path for non-encapsulated RTF bodies
+# ---------------------------------------------------------------------------
+
+
+def test_rtf_hex_escapes_decode_with_ansicpg():
+    rtf = rb"{\rtf1\ansi\ansicpg1252 caf\'e9 au lait\par}"
+    assert dc._rtf_bytes_to_text(rtf) == "café au lait\n"
+
+
+def test_rtf_hex_escapes_decode_multibyte_codepage():
+    # cp932 (Shift-JIS): 0x93 0xFA = 日, 0x96 0x7B = 本
+    rtf = rb"{\rtf1\ansi\ansicpg932 \'93\'fa\'96\'7b}"
+    assert dc._rtf_bytes_to_text(rtf) == "日本"
+
+
+def test_rtf_unicode_escapes_skip_fallback_chars():
+    # 26085 = 日, 26412 = 本
+    rtf = b"{\\rtf1\\ansi\\ansicpg1252\\uc1 \\u26085?\\u26412? end}"
+    out = dc._rtf_bytes_to_text(rtf)
+    assert "日本 end" in out
+    assert "?" not in out  # fallback char must not be duplicated
+
+
+def test_rtf_unicode_uc2_skips_two_fallback_bytes():
+    # \uc2: the two \'xx fallback bytes after the unicode escape must be
+    # skipped, not decoded
+    rtf = b"{\\rtf1\\ansi\\ansicpg1252\\uc2 \\u26085\\'93\\'fa done}"
+    out = dc._rtf_bytes_to_text(rtf)
+    assert "日done" in out.replace(" ", "")
+    assert out.count("日") == 1
+
+
+def test_rtf_negative_unicode_values():
+    # -1279 + 65536 = 64257 = U+FB01 (LATIN SMALL LIGATURE FI)
+    rtf = rb"{\rtf1\ansi\ansicpg1252\uc1 \u-1279?le}"
+    out = dc._rtf_bytes_to_text(rtf)
+    assert "ﬁle" in out
+    assert "?" not in out
+
+
+def test_rtf_destination_groups_still_dropped():
+    rtf = (
+        rb"{\rtf1\ansi\ansicpg1252{\fonttbl{\f0\fswiss Arial;}}"
+        rb"{\colortbl;\red0\green0\blue0;}{\*\generator Hidden Tool}"
+        rb"Visible body.\tab tabbed\line next}"
+    )
+    out = dc._rtf_bytes_to_text(rtf)
+    assert "Visible body.\ttabbed\nnext" in out
+    assert "Arial" not in out
+    assert "Hidden Tool" not in out
+
+
+def test_rtf_escaped_braces_and_backslash():
+    rtf = rb"{\rtf1\ansi a \{b\} c\\d}"
+    assert dc._rtf_bytes_to_text(rtf) == "a {b} c\\d"
 
 
 # ---------------------------------------------------------------------------

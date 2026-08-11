@@ -17,6 +17,7 @@ mbox and incompatible Eudora/Outlook Express binary formats. startup.py
 notices .mbx files so the user can convert them manually.
 """
 
+import codecs
 import email as _email
 import mailbox
 import re
@@ -109,6 +110,32 @@ def _convert_eml(source: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _mht_root_html_part(msg):
+    """Pick the HTML part to convert per RFC 2557.
+
+    If the multipart/related "start" parameter names a part's Content-ID
+    (angle brackets stripped on both sides) and that part is text/html, it is
+    the root document. Otherwise — no start parameter, no Content-ID match,
+    or a non-HTML match — fall back to the first text/html part. Returns None
+    when there is no HTML part at all.
+    """
+    start = msg.get_param("start")
+    if start:
+        target = start.strip().strip("<>")
+        for part in msg.walk():
+            cid = part.get("Content-ID")
+            if (
+                cid
+                and cid.strip().strip("<>") == target
+                and part.get_content_type() == "text/html"
+            ):
+                return part
+    for part in msg.walk():
+        if part.get_content_type() == "text/html":
+            return part
+    return None
+
+
 def _convert_mht(source: Path) -> str:
     from markdownify import markdownify
 
@@ -116,14 +143,13 @@ def _convert_mht(source: Path) -> str:
         msg = _email.message_from_binary_file(f, policy=_policy.default)
 
     body = None
-    for part in msg.walk():
-        if part.get_content_type() == "text/html":
-            try:
-                html = part.get_content()
-            except Exception:
-                html = part.get_payload(decode=True).decode("utf-8", errors="replace")
-            body = markdownify(_ensure_str(html), heading_style="ATX")
-            break
+    part = _mht_root_html_part(msg)
+    if part is not None:
+        try:
+            html = part.get_content()
+        except Exception:
+            html = part.get_payload(decode=True).decode("utf-8", errors="replace")
+        body = markdownify(_ensure_str(html), heading_style="ATX")
     if body is None:
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
@@ -162,24 +188,140 @@ def _convert_mbox(source: Path) -> str:
 # .msg / .oft — extract-msg; body priority: plain text, HTML, RTF text
 # ---------------------------------------------------------------------------
 
-_RTF_CONTROL = re.compile(rb"\\'[0-9a-fA-F]{2}|\\[a-zA-Z]+-?\d* ?|[{}]|\\[^a-zA-Z]")
+_RTF_SKIP_DESTINATIONS = frozenset(
+    (b"fonttbl", b"colortbl", b"stylesheet", b"info", b"themedata")
+)
+
+# One token starting at a backslash; a control word's optional trailing-space
+# delimiter is consumed with the word.
+_RTF_TOKEN = re.compile(
+    rb"\\'([0-9a-fA-F]{2})"  # hex escape: one codepage byte
+    rb"|\\u(-?\d+) ?"  # unicode escape
+    rb"|\\([a-zA-Z]+)(-?\d+)? ?"  # control word + numeric parameter
+    rb"|\\(.)",  # control symbol
+    re.DOTALL,
+)
 
 
 def _rtf_bytes_to_text(rtf: bytes) -> str:
-    """Last-resort plain-text extraction from (already decompressed) RTF."""
-    # Drop destination groups we never want rendered (fonts, colors, etc.).
-    body = re.sub(rb"\{\\\*[^{}]*\}", b"", rtf)
-    body = re.sub(
-        rb"\{\\(?:fonttbl|colortbl|stylesheet|info|themedata)[^{}]*(?:\{[^{}]*\})*[^{}]*\}",
-        b"",
-        body,
-    )
-    body = body.replace(b"\\par", b"\n").replace(b"\\line", b"\n").replace(b"\\tab", b"\t")
-    body = _RTF_CONTROL.sub(b"", body)
-    return body.decode("utf-8", errors="replace")
+    """Last-resort plain-text extraction from (already decompressed) RTF.
+
+    Not a full parser, but escape decoding is correct on nesting-free bodies:
+    \\'xx hex escapes decode with the \\ansicpgN codepage (default cp1252),
+    \\uN unicode escapes decode with their \\ucN fallback characters skipped
+    (default 1; negative N is N + 65536), {\\*...} and font/color/style/info/
+    themedata destination groups are dropped, \\par and \\line map to newlines
+    and \\tab to tab, and remaining control words and braces are stripped.
+    """
+    codepage = "cp1252"
+    declared = re.search(rb"\\ansicpg(\d+)", rtf)
+    if declared:
+        candidate = "cp" + declared.group(1).decode("ascii")
+        try:
+            codecs.lookup(candidate)
+            codepage = candidate
+        except LookupError:
+            pass
+
+    out: list[str] = []
+    buf = bytearray()  # pending codepage-encoded bytes (literal text and \'xx)
+
+    def flush() -> None:
+        if buf:
+            out.append(buf.decode(codepage, errors="replace"))
+            buf.clear()
+
+    depth = 0
+    skip_depth = None  # depth of the shallowest group being dropped, if any
+    uc = 1  # current \ucN fallback length
+    uc_stack: list[int] = []
+    pending = 0  # \uN fallback characters still to skip
+
+    i, n = 0, len(rtf)
+    while i < n:
+        c = rtf[i]
+        if c == 0x7B:  # {
+            flush()
+            depth += 1
+            uc_stack.append(uc)
+            pending = 0  # group boundaries end a fallback run
+            if skip_depth is None:
+                head = re.match(rb"\\\*|\\([a-zA-Z]+)", rtf[i + 1 : i + 16])
+                if head and (head.group(1) is None or head.group(1) in _RTF_SKIP_DESTINATIONS):
+                    skip_depth = depth
+            i += 1
+        elif c == 0x7D:  # }
+            flush()
+            uc = uc_stack.pop() if uc_stack else 1
+            pending = 0
+            if skip_depth == depth:
+                skip_depth = None
+            depth -= 1
+            i += 1
+        elif c == 0x5C:  # backslash
+            token = _RTF_TOKEN.match(rtf, i)
+            if token is None:  # trailing lone backslash
+                break
+            hexbyte, uval, word, param, symbol = token.groups()
+            if skip_depth is not None:
+                pass
+            elif hexbyte is not None:
+                if pending:
+                    pending -= 1
+                else:
+                    buf.append(int(hexbyte, 16))
+            elif uval is not None:
+                flush()
+                out.append(chr(int(uval) % 65536))
+                pending = uc
+            elif word is not None:
+                flush()
+                if word == b"uc" and param is not None:
+                    uc = int(param)
+                elif word in (b"par", b"line"):
+                    out.append("\n")
+                elif word == b"tab":
+                    out.append("\t")
+            elif symbol in b"\\{}":  # escaped literal
+                if pending:
+                    pending -= 1
+                else:
+                    buf.extend(symbol)
+            i = token.end()
+        else:
+            if c in (0x0D, 0x0A):
+                pass  # raw newlines are not RTF content
+            elif skip_depth is not None:
+                pass
+            elif pending:
+                pending -= 1
+            else:
+                buf.append(c)
+            i += 1
+    flush()
+    return "".join(out)
+
+
+# Charset declarations are ASCII, so scanning raw bytes is safe. Matches both
+# <meta charset=...> and <meta http-equiv="Content-Type" content="...charset=...">.
+_HTML_META_CHARSET = re.compile(
+    rb"<meta[^>]*?charset\s*=\s*[\"']?([A-Za-z0-9._:-]+)", re.IGNORECASE
+)
 
 
 def _decode_html_bytes(html: bytes) -> str:
+    """Decode raw HTML bytes, honoring a declared <meta> charset when present.
+
+    A declared charset is tried first (strict); unknown codec names or decode
+    failures fall through to the undeclared behavior: strict UTF-8, then
+    cp1252 with replacement.
+    """
+    declared = _HTML_META_CHARSET.search(html[:4096])
+    if declared:
+        try:
+            return html.decode(declared.group(1).decode("ascii"))
+        except (LookupError, UnicodeDecodeError):
+            pass
     try:
         return html.decode("utf-8")
     except UnicodeDecodeError:
