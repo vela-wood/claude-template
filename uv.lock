@@ -8,8 +8,8 @@ resolution-markers = [
 
 [[package]]
 name = "adeu"
-version = "1.30.0"
-source = { git = "https://github.com/vela-wood/adeu.git?subdirectory=python&branch=slim#8bd59060fae658a0b0edae77f9c3a83b635e27bb" }
+version = "2.1.0"
+source = { git = "https://github.com/vela-wood/adeu.git?subdirectory=python&branch=slim#7c3f80caea04b5c4d78cd718c32845ec1e917013" }
 dependencies = [
     { name = "diff-match-patch" },
     { name = "jinja2" },
