@@ -33,7 +33,7 @@ def run_main() -> int:
 
 def read_csv_dict(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(l for l in f if not l.startswith("#")))
+        return list(csv.DictReader(f))
 
 
 # ---------------------------------------------------------------------------
@@ -153,59 +153,6 @@ def test_changed_content_reconverts_even_with_same_size(repo_tmp, capsys):
     assert run_main() == 0
     assert "1 converted, 0 unchanged" in capsys.readouterr().out
     assert "# BBBBBBB" in (repo_tmp / "a.eml.md").read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Converter schema versioning
-# ---------------------------------------------------------------------------
-
-
-def test_pre_migration_hash_index_reads_as_stale_and_reconverts(repo_tmp, capsys):
-    """A .hash_index.csv written by main (plain file,hash rows, no schema
-    marker) must not certify anything, even when hashes match exactly."""
-    write_eml(repo_tmp / "a.eml")
-    assert run_main() == 0
-    capsys.readouterr()
-    # Rewrite the index in the old main format: same rows, marker stripped
-    index = repo_tmp / ".hash_index.csv"
-    old_format = "".join(
-        line
-        for line in index.read_text(encoding="utf-8").splitlines(keepends=True)
-        if not line.startswith("#")
-    )
-    index.write_text(old_format, encoding="utf-8", newline="")
-
-    assert startup.load_hash_index(repo_tmp) == {}
-    assert run_main() == 0
-    assert "1 converted, 0 unchanged" in capsys.readouterr().out
-
-
-def test_current_schema_writes_marker_and_certifies_second_run(repo_tmp, capsys):
-    write_eml(repo_tmp / "a.eml")
-    assert run_main() == 0
-    capsys.readouterr()
-    first_line = (
-        (repo_tmp / ".hash_index.csv").read_text(encoding="utf-8").splitlines()[0]
-    )
-    assert first_line == f"#schema={startup.CONVERTER_SCHEMA_VERSION}"
-    assert run_main() == 0
-    assert "0 converted, 1 unchanged" in capsys.readouterr().out
-
-
-def test_bumped_schema_version_invalidates_certification(
-    repo_tmp, monkeypatch, capsys
-):
-    write_eml(repo_tmp / "a.eml")
-    assert run_main() == 0
-    capsys.readouterr()
-    monkeypatch.setattr(
-        startup, "CONVERTER_SCHEMA_VERSION", startup.CONVERTER_SCHEMA_VERSION + 1
-    )
-    assert run_main() == 0
-    assert "1 converted, 0 unchanged" in capsys.readouterr().out
-    # after one run under the bumped version, certification works again
-    assert run_main() == 0
-    assert "0 converted, 1 unchanged" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -520,9 +467,8 @@ def test_empty_tree_prunes_indexes_and_keeps_sidecars(repo_tmp, capsys):
     assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
     assert read_csv_dict(repo_tmp / ".token_index.csv") == []
     assert read_csv_dict(repo_tmp / ".ocr_index.csv") == []
-    # schema marker and headers still written
     assert (repo_tmp / ".hash_index.csv").read_text(encoding="utf-8").startswith(
-        f"#schema={startup.CONVERTER_SCHEMA_VERSION}\nfile,hash"
+        "file,hash\n"
     )
     assert orphan.read_text(encoding="utf-8") == "keep me"
 

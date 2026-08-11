@@ -5,14 +5,12 @@ Orchestration only: routing and rendering live in document_conversion.py,
 PDF classification in pdfcheck.py, atomic replacement in fsio.py.
 
 Certification model: the hash index is written last and is the certification
-marker; it is withheld entirely when any preceding index write fails, and it
-carries the converter schema version so indexes written by an earlier
-converter pipeline read as stale. A source is "unchanged" only when its
-fresh CRC32 equals the previously certified hash AND its sidecar exists AND
-it has a valid token row. Any hashing, classification, conversion,
-tokenization, requested-OCR, sidecar-write, or index-write failure leaves
-prior state in place, is reported, and produces a nonzero exit. Pending OCR
-consent and skipped .mbx notices alone exit zero.
+marker and is withheld entirely when any preceding index write fails. A source
+is "unchanged" only when its fresh CRC32 equals the previously certified hash
+AND its sidecar exists AND it has a valid token row. Any hashing,
+classification, conversion, tokenization, requested-OCR, sidecar-write, or
+index-write failure leaves prior state in place, is reported, and produces a
+nonzero exit. Pending OCR consent and skipped .mbx notices alone exit zero.
 """
 
 import argparse
@@ -52,13 +50,6 @@ load_repo_dotenv(__file__)
 HASH_INDEX_FILENAME = ".hash_index.csv"
 TOKEN_INDEX_FILENAME = ".token_index.csv"
 CAPTION_OUTPUT_DIRNAME = "caption_cache"
-
-# Converter schema version, persisted as the first line of .hash_index.csv
-# ("#schema=N"). Bump whenever converter output changes (routing, renderer,
-# or sidecar format) so every previously certified source reconverts once.
-# Version 1 is the unversioned pre-migration (MarkItDown) index, whose plain
-# "file,hash" file has no marker and therefore always reads as stale.
-CONVERTER_SCHEMA_VERSION = 2
 
 # Statuses for ProcessingResult
 STATUS_UNCHANGED = "unchanged"
@@ -125,34 +116,20 @@ def _rel(root: Path, path: Path) -> str:
 
 
 def load_hash_index(root: Path) -> dict[str, str]:
-    """Load .hash_index.csv → {source_relative_path: hash}.
-
-    The first line must be the current schema marker
-    "#schema=<CONVERTER_SCHEMA_VERSION>". A missing or mismatched marker —
-    including any index written by the pre-migration pipeline, which has no
-    marker — makes the whole index stale: an empty index is returned, no
-    source certifies as unchanged, and everything reconverts once.
-    """
+    """Load .hash_index.csv → {source_relative_path: hash}."""
     index_path = root / HASH_INDEX_FILENAME
     index: dict[str, str] = {}
     if not index_path.exists():
         return index
     with open(index_path, newline="", encoding="utf-8") as f:
-        if f.readline().rstrip("\r\n") != f"#schema={CONVERTER_SCHEMA_VERSION}":
-            return index
         for row in csv.DictReader(f):
             index[row["file"]] = row["hash"]
     return index
 
 
 def save_hash_index(root: Path, index: dict[str, str]) -> None:
-    """Write .hash_index.csv from {source_relative_path: hash}.
-
-    The first line is the schema marker "#schema=<CONVERTER_SCHEMA_VERSION>"
-    that load_hash_index requires; the CSV header and rows follow.
-    """
+    """Write .hash_index.csv from {source_relative_path: hash}."""
     buf = io.StringIO()
-    buf.write(f"#schema={CONVERTER_SCHEMA_VERSION}\r\n")
     writer = csv.writer(buf)
     writer.writerow(["file", "hash"])
     for rel_path in sorted(index):
@@ -586,12 +563,7 @@ def is_certified_unchanged(
     token_index: dict[str, int],
 ) -> bool:
     """True only for: fresh CRC32 equal to the certified hash, an existing
-    sidecar, and a valid token row. File metadata is never a substitute.
-
-    hash_index must come from load_hash_index, which returns an empty index
-    for any file lacking the current CONVERTER_SCHEMA_VERSION marker, so
-    sidecars produced by an earlier converter pipeline never certify and
-    every source reconverts once after a converter migration."""
+    sidecar, and a valid token row. File metadata is never a substitute."""
     if hash_index.get(rel) != fresh_hash:
         return False
     sidecar = converted_path(root / rel)
