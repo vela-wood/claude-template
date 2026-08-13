@@ -8,9 +8,9 @@ Page classes:
   - scan + OCR layer: cov >= 0.8 and chars >= 20
   - digital text: cov < 0.8 and chars >= 20
   - blank/other: neither
-File verdict = majority of pages (scan classes win ties). Files whose
-verdict is "scanned-image-only" or "mixed/other" need OCR before text
-conversion will produce anything useful.
+File verdict = majority of pages (scan classes win ties). Every verdict
+except "digital-text" needs OCR: "scan+ocr" text layers are invisible
+(render mode 3) third-party OCR, which anydoc refuses to extract.
 
 Importable API: classify_pdf(), PdfClassification, load/save_ocr_index().
 CLI: uv run pdfcheck.py [root] [-o output.csv]
@@ -29,7 +29,7 @@ from fsio import atomic_write_text
 fitz.TOOLS.mupdf_display_errors(False)
 
 OCR_INDEX_FILENAME = ".ocr_index.csv"
-NEEDS_OCR_VERDICTS = {"scanned-image-only", "mixed/other"}
+NEEDS_OCR_VERDICTS = {"scanned-image-only", "scan+ocr", "mixed/other"}
 _FULL_PAGE_IMAGE_COVERAGE = 0.8
 _MIN_TEXT_CHARS = 20
 
