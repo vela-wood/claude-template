@@ -18,7 +18,7 @@
 
 ## 3. Startup procedure
 
-Unless working on a pure coding task, run the below first:
+Unless working on a pure coding task, run the below first. A pure coding task is involves changes to the code inside this repo. Make sure any edits to the repo support both mac and windows users.
 
 1. **Convert files to markdown**
    - Use `uv run startup.py` 
