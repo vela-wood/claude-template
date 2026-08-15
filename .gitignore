@@ -7,6 +7,7 @@ wheels/
 *.egg-info
 USERPREFS.md
 *.json
+!.claude/settings.json
 .venv
 /.uv-cache/
 .DS_Store
@@ -15,7 +16,6 @@ USERPREFS.md
 .env
 *.cfg
 adeu/
-/.statusline/
 
 # Matter documents and converted markdown sidecars.
 *.docx

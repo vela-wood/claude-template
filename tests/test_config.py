@@ -22,11 +22,14 @@ from config.env import (
 from config.statusline import (
     build_statusline_command,
     detect_python3,
-    detect_renderer,
-    merge_local_settings,
+    install_state,
+    install_user_statusline,
+    installed_script,
+    merge_statusline_settings,
     remove_local_statusline,
     statusline_settings,
-    uses_repo_tee,
+    script_source,
+    uses_installed_script,
     _quote_for_platform,
 )
 
@@ -38,32 +41,31 @@ from config.statusline import (
 
 def test_build_command_render_posix():
     assert build_statusline_command(
-        "/usr/bin/python3", Path("/repo"), None, platform="linux"
-    ) == "/usr/bin/python3 /repo/.claude/hooks/ccstatus-tee.py --render"
+        "/usr/bin/python3",
+        Path("/home/u/.claude/hooks/ccstatus.py"),
+        platform="linux",
+    ) == "/usr/bin/python3 /home/u/.claude/hooks/ccstatus.py"
 
 
-def test_build_command_renderer_posix_quotes_spaces():
+def test_build_command_posix_quotes_spaces():
     cmd = build_statusline_command(
         "/usr/bin/python3",
-        Path("/my repo"),
-        "/my repo/.statusline/node_modules/.bin/ccstatusline",
+        Path("/my home/.claude/hooks/ccstatus.py"),
         platform="linux",
     )
     assert cmd == (
-        "/usr/bin/python3 '/my repo/.claude/hooks/ccstatus-tee.py' | "
-        "'/my repo/.statusline/node_modules/.bin/ccstatusline'"
+        "/usr/bin/python3 '/my home/.claude/hooks/ccstatus.py'"
     )
 
 
 def test_build_command_windows_double_quotes():
     cmd = build_statusline_command(
         r"C:\Program Files\Python\python.exe",
-        Path("/repo x"),
-        None,
+        Path(r"/home x/.claude/hooks/ccstatus.py"),
         platform="win32",
     )
     assert cmd.startswith('"C:\\Program Files\\Python\\python.exe" ')
-    assert cmd.endswith(" --render")
+    assert cmd.endswith('ccstatus.py"')
     assert "'" not in cmd
 
 
@@ -74,7 +76,7 @@ def test_quote_for_platform():
 
 
 # ---------------------------------------------------------------------------
-# detect_python3 / detect_renderer
+# detect_python3
 # ---------------------------------------------------------------------------
 
 
@@ -106,12 +108,72 @@ def test_detect_python3_posix_fallback(monkeypatch):
     assert detect_python3() == "/usr/bin/python3"
 
 
-def test_detect_renderer(tmp_path):
-    assert detect_renderer(tmp_path) is None
-    exe = tmp_path / ".statusline" / "node_modules" / ".bin" / "ccstatusline"
-    exe.parent.mkdir(parents=True)
-    exe.write_text("#!/bin/sh\n", encoding="utf-8")
-    assert detect_renderer(tmp_path) == str(exe)
+# ---------------------------------------------------------------------------
+# install_state / install_user_statusline
+# ---------------------------------------------------------------------------
+
+
+def _fake_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    script_source(repo).write_text("# statusline v1\n", encoding="utf-8")
+    return repo
+
+
+def test_install_state_missing_then_current_then_outdated(tmp_path):
+    repo = _fake_repo(tmp_path)
+    user_dir = tmp_path / ".claude"
+    assert install_state(repo, user_dir) == "missing"
+    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    assert install_state(repo, user_dir) == "current"
+    script_source(repo).write_text("# statusline v2\n", encoding="utf-8")
+    assert install_state(repo, user_dir) == "outdated"
+
+
+def test_install_user_statusline_copies_and_wires(tmp_path):
+    repo = _fake_repo(tmp_path)
+    user_dir = tmp_path / ".claude"
+    settings = user_dir / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"permissions": {"allow": ["X"]}}), encoding="utf-8"
+    )
+    command = install_user_statusline(
+        repo, user_dir, "/usr/bin/python3", platform="linux"
+    )
+    target = installed_script(user_dir)
+    assert target.read_text(encoding="utf-8") == "# statusline v1\n"
+    assert command == f"/usr/bin/python3 {target}"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["permissions"] == {"allow": ["X"]}  # untouched
+    assert data["statusLine"] == {
+        "type": "command",
+        "command": command,
+        "padding": 0,
+    }
+    # reinstall is idempotent
+    assert (
+        install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+        == command
+    )
+
+
+def test_install_user_statusline_missing_source(tmp_path):
+    with pytest.raises(SetupError):
+        install_user_statusline(
+            tmp_path / "no-repo", tmp_path / ".claude", "/usr/bin/python3"
+        )
+
+
+def test_install_user_statusline_never_clobbers_malformed_settings(tmp_path):
+    repo = _fake_repo(tmp_path)
+    user_dir = tmp_path / ".claude"
+    settings = user_dir / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{broken", encoding="utf-8")
+    with pytest.raises(SetupError):
+        install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    assert settings.read_text(encoding="utf-8") == "{broken"
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +190,7 @@ def test_organization_choices():
     }
     assert organization_choices(payload) == [
         ("Acme", "org-1"),
-        ("Organization 2", "<missing organization_id>"),
+        ("Organization 2", ""),
     ]
     assert organization_choices({}) == []
     assert organization_choices({"organizations": None}) == []
@@ -159,19 +221,19 @@ def test_summarize_env_write():
             skipped_existing_keys=("D",),
         ),
     )
-    assert "2 new key(s)" in text
-    assert "1 conflicting value(s) appended" in text
-    assert "1 already set" in text
-    assert "1 null value(s) skipped" in text
+    assert "2 added" in text
+    assert "1 updated" in text
+    assert "1 already saved" in text
+    assert "1 skipped (empty)" in text
 
 
 # ---------------------------------------------------------------------------
-# statusline_settings / merge_local_settings
+# statusline_settings / merge_statusline_settings
 # ---------------------------------------------------------------------------
 
 
 def test_statusline_settings(tmp_path):
-    path = tmp_path / "settings.local.json"
+    path = tmp_path / "settings.json"
     assert statusline_settings(path) is None
     path.write_text("{malformed", encoding="utf-8")
     assert statusline_settings(path) is None
@@ -182,56 +244,57 @@ def test_statusline_settings(tmp_path):
     assert statusline_settings(path) == "x"
 
 
-def test_merge_local_settings_preserves_keys_and_skips_identical(tmp_path):
-    path = tmp_path / "settings.local.json"
+def test_merge_statusline_settings_preserves_keys_and_skips_identical(tmp_path):
+    path = tmp_path / "settings.json"
     path.write_text(
         json.dumps({"permissions": {"allow": ["X"]}, "prefersReducedMotion": False}),
         encoding="utf-8",
     )
-    assert merge_local_settings(path, "cmd one") is True
+    assert merge_statusline_settings(path, "cmd one") is True
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["permissions"] == {"allow": ["X"]}
     assert data["prefersReducedMotion"] is False
     assert data["statusLine"] == {"type": "command", "command": "cmd one", "padding": 0}
     # identical → skip
-    assert merge_local_settings(path, "cmd one") is False
+    assert merge_statusline_settings(path, "cmd one") is False
     # different → rewrite
-    assert merge_local_settings(path, "cmd two") is True
+    assert merge_statusline_settings(path, "cmd two") is True
     assert statusline_settings(path) == "cmd two"
 
 
-def test_merge_local_settings_creates_missing_file(tmp_path):
-    path = tmp_path / "sub" / "settings.local.json"
-    assert merge_local_settings(path, "cmd") is True
+def test_merge_statusline_settings_creates_missing_file(tmp_path):
+    path = tmp_path / "sub" / "settings.json"
+    assert merge_statusline_settings(path, "cmd") is True
     assert statusline_settings(path) == "cmd"
 
 
 @pytest.mark.parametrize("content", ["{broken", "[1]"])
-def test_merge_local_settings_never_clobbers_malformed(tmp_path, content):
-    path = tmp_path / "settings.local.json"
+def test_merge_statusline_settings_never_clobbers_malformed(tmp_path, content):
+    path = tmp_path / "settings.json"
     path.write_text(content, encoding="utf-8")
     with pytest.raises(SetupError):
-        merge_local_settings(path, "cmd")
+        merge_statusline_settings(path, "cmd")
     assert path.read_text(encoding="utf-8") == content
 
 
 # ---------------------------------------------------------------------------
-# uses_repo_tee / remove_local_statusline (global statusline layout)
+# uses_installed_script / remove_local_statusline
 # ---------------------------------------------------------------------------
 
 
-def test_uses_repo_tee(tmp_path):
-    tee = tmp_path / ".claude" / "hooks" / "ccstatus-tee.py"
-    assert uses_repo_tee(f"/usr/bin/python3 {tee} | npx -y ccstatusline@latest", tmp_path)
-    assert uses_repo_tee(f"/usr/bin/python3 {tee} --render", tmp_path)
+def test_uses_installed_script(tmp_path):
+    user_dir = tmp_path / ".claude"
+    script = installed_script(user_dir)
+    assert uses_installed_script(f"/usr/bin/python3 {script}", user_dir)
     # shlex-quoted paths keep the raw path as a substring
-    assert uses_repo_tee(f"/usr/bin/python3 '{tee}' | 'my renderer'", tmp_path)
-    assert not uses_repo_tee("npx -y ccstatusline@latest", tmp_path)
-    assert not uses_repo_tee(
-        "/usr/bin/python3 /other/repo/.claude/hooks/ccstatus-tee.py --render", tmp_path
+    assert uses_installed_script(f"/usr/bin/python3 '{script}'", user_dir)
+    assert not uses_installed_script("npx -y ccstatusline@latest", user_dir)
+    assert not uses_installed_script(
+        "/usr/bin/python3 /other/home/.claude/hooks/ccstatus.py",
+        user_dir,
     )
-    assert not uses_repo_tee(None, tmp_path)
-    assert not uses_repo_tee("", tmp_path)
+    assert not uses_installed_script(None, user_dir)
+    assert not uses_installed_script("", user_dir)
 
 
 def test_remove_local_statusline_preserves_other_keys(tmp_path):
@@ -350,86 +413,60 @@ def test_upstream_ref_none_when_git_missing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _isolate_user_settings(monkeypatch, tmp_path):
-    """Point hub_status at a scratch user-level settings file, not the real
-    ~/.claude/settings.json."""
-    path = tmp_path / "user-settings.json"
-    monkeypatch.setattr(config_app, "USER_SETTINGS_PATH", path)
-    return path
+def _isolate_user_claude(monkeypatch, tmp_path):
+    """Point hub_status at a scratch ~/.claude, not the real one."""
+    user_dir = tmp_path / "home" / ".claude"
+    monkeypatch.setattr(config_app, "USER_CLAUDE_DIR", user_dir)
+    monkeypatch.setattr(config_app, "USER_SETTINGS_PATH", user_dir / "settings.json")
+    return user_dir
 
 
 def test_hub_status_rows_independent_on_malformed_settings(tmp_path, monkeypatch):
-    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    _isolate_user_settings(monkeypatch, tmp_path)
-    (tmp_path / "settings.json").write_text("{broken", encoding="utf-8")
-    rows = hub_status(tmp_path)
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    _isolate_user_claude(monkeypatch, tmp_path)
+    (repo / "settings.json").write_text("{broken", encoding="utf-8")
+    rows = hub_status(repo)
     assert set(rows) == {"env", "sidecar", "statusline"}
-    assert "settings.json invalid" in rows["sidecar"]
-    assert "fix or delete it" in rows["sidecar"]
-    assert rows["env"] == "not configured"
-    assert rows["statusline"] == "not configured"
+    assert "a settings file has a problem" in rows["sidecar"]
+    assert "delete settings.json and run setup again" in rows["sidecar"]
+    assert rows["env"] == "not set up yet"
+    assert rows["statusline"] == "not set up yet"
 
 
-def test_hub_status_configured_statusline(tmp_path, monkeypatch):
-    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    _isolate_user_settings(monkeypatch, tmp_path)
-    local = tmp_path / ".claude" / "settings.local.json"
-    recommended = build_statusline_command(
-        detect_python3(), tmp_path, None
-    )
-    merge_local_settings(local, recommended)
-    assert hub_status(tmp_path)["statusline"] == "configured"
-    merge_local_settings(local, "something else")
-    assert hub_status(tmp_path)["statusline"] == "differs from recommended"
-
-
-def test_hub_status_global_tee_layout(tmp_path, monkeypatch):
-    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    user_settings = _isolate_user_settings(monkeypatch, tmp_path)
-    tee = tmp_path / ".claude" / "hooks" / "ccstatus-tee.py"
-    user_settings.write_text(
-        json.dumps(
-            {
-                "statusLine": {
-                    "type": "command",
-                    "command": f"/usr/bin/python3 {tee} | npx -y ccstatusline@latest",
-                    "padding": 0,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    # global tee + no local statusLine → configured globally
+def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    user_dir = _isolate_user_claude(monkeypatch, tmp_path)
+    # nothing installed → not set up
+    assert hub_status(repo)["statusline"] == "not set up yet"
+    # installed and wired → ready
+    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
     assert (
-        hub_status(tmp_path)["statusline"]
-        == "configured globally (~/.claude/settings.json runs the tee)"
+        hub_status(repo)["statusline"]
+        == "ready — installed account-wide, works in every folder"
     )
-    # a local statusLine shadows the global one → flagged, even when it
-    # matches the recommended local command
-    local = tmp_path / ".claude" / "settings.local.json"
-    merge_local_settings(
-        local, build_statusline_command(detect_python3(), tmp_path, None)
-    )
+    # repo script updated → prompt to reinstall
+    script_source(repo).write_text("# statusline v2\n", encoding="utf-8")
     assert (
-        hub_status(tmp_path)["statusline"]
-        == "local statusLine overrides the global tee'd statusline"
+        hub_status(repo)["statusline"]
+        == "needs attention — an updated status bar is ready to install"
+    )
+    # a repo-local statusLine shadows the account-wide one → flagged first
+    local = repo / ".claude" / "settings.local.json"
+    merge_statusline_settings(local, "anything")
+    assert hub_status(repo)["statusline"] == (
+        "needs attention — this folder overrides your account-wide "
+        "status bar (open this item to fix)"
     )
 
 
-def test_hub_status_global_statusline_without_tee_is_not_configured(tmp_path, monkeypatch):
-    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    user_settings = _isolate_user_settings(monkeypatch, tmp_path)
-    user_settings.write_text(
-        json.dumps(
-            {
-                "statusLine": {
-                    "type": "command",
-                    "command": "npx -y ccstatusline@latest",
-                    "padding": 0,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    # a global renderer with no tee never refreshes the cache → not configured
-    assert hub_status(tmp_path)["statusline"] == "not configured"
+def test_hub_status_script_copied_but_not_wired_is_not_configured(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    user_dir = _isolate_user_claude(monkeypatch, tmp_path)
+    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    # statusLine replaced by something that never runs the script → the cache
+    # never refreshes → not configured
+    merge_statusline_settings(user_dir / "settings.json", "npx -y ccstatusline@latest")
+    assert hub_status(repo)["statusline"] == "not set up yet"

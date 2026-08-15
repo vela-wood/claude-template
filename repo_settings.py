@@ -45,7 +45,7 @@ def load_json_object(path: Path | None = None) -> dict:
         raise RepoSettingsError(f"{settings_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise RepoSettingsError(
-            f"{settings_path}: expected a JSON object, got {type(data).__name__}"
+            f"{settings_path}: the file isn't in the expected format"
         )
     return data
 
@@ -80,7 +80,7 @@ def read_sidecar_dotfiles(path: Path | None = None) -> bool:
     value = data["sidecar_dotfiles"]
     if not isinstance(value, bool):
         raise RepoSettingsError(
-            f"{_resolve(path)}: key 'sidecar_dotfiles' must be a JSON boolean, "
-            f"got {value!r}"
+            f"{_resolve(path)}: the 'sidecar_dotfiles' setting must be "
+            f"true or false, but it is {value!r}"
         )
     return value

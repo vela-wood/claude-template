@@ -2,8 +2,11 @@
 """Opt-in, per-session usage guard fed by the statusline cache.
 
 Reads ONLY ~/legal/ccstatus.json — the verbatim statusline payload cached by
-.claude/hooks/ccstatus-tee.py (freshness = file mtime). No network, no OAuth,
-no Keychain; stdlib only, so the hook hot path never needs `uv run`.
+~/.claude/hooks/ccstatus.py, which `uv run config.py` installs from this
+repo's ccstatus.py (freshness = file mtime). No network, no OAuth, no
+Keychain; stdlib only, so the hook hot path never needs `uv run`. Until that
+install happens the cache never refreshes and every hook mode silently does
+nothing (fails open) — the only visible complaint is in the manual mode.
 
 At session start, if any usage window is >90%, a SessionStart hook injects
 additionalContext asking Claude to offer a one-session stop-at-99% guard.
@@ -273,7 +276,11 @@ def mode_manual(args):
         msg = (
             "usage cache stale (statusline cache pipeline may be broken)"
             if gauges
-            else f"no live usage data in {CACHE} (missing, unparseable, or all windows expired)"
+            else (
+                f"no live usage data in {CACHE} (missing, unparseable, or "
+                "all windows expired) — if the statusline was never "
+                "installed, run `uv run config.py`"
+            )
         )
         print(msg, file=sys.stderr)
         return 2

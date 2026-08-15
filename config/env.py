@@ -12,7 +12,7 @@ from typing import Mapping
 import httpx
 from dotenv.parser import parse_stream
 
-from .common import ENV_FILE, SetupError
+from .common import SetupError
 
 SETUP_PAGE_URL = "https://app.caption.fyi/claude_setup"
 SETUP_API_URL = "https://chat.caption.fyi/claude_setup"
@@ -226,13 +226,20 @@ def organization_choices(payload: Mapping[str, object]) -> list[tuple[str, str]]
     if organizations is None:
         return []
     if not isinstance(organizations, list):
-        raise SetupError("'organizations' must be an array.")
+        raise SetupError(
+            "The setup code didn't include valid organization details. "
+            "Get a fresh code from the setup page and try again."
+        )
     choices: list[tuple[str, str]] = []
     for index, organization in enumerate(organizations, start=1):
         if not isinstance(organization, Mapping):
-            raise SetupError(f"'organizations[{index}]' must be an object.")
+            raise SetupError(
+                "The setup code didn't include valid organization details. "
+                "Get a fresh code from the setup page and try again."
+            )
         organization_name = _clean_optional_text(organization.get("organization_name")) or f"Organization {index}"
-        organization_id = _clean_optional_text(organization.get("organization_id")) or "<missing organization_id>"
+        # Empty id → the TUI shows the name alone (never a placeholder).
+        organization_id = _clean_optional_text(organization.get("organization_id")) or ""
         choices.append((organization_name, organization_id))
     return choices
 
@@ -255,7 +262,10 @@ def build_env_values(payload: Mapping[str, object]) -> BuildResult:
     if organizations is None:
         organizations = []
     if not isinstance(organizations, list):
-        raise SetupError("'organizations' must be an array.")
+        raise SetupError(
+            "The setup code didn't include valid organization details. "
+            "Get a fresh code from the setup page and try again."
+        )
 
     for key, value in payload.items():
         if key in ROOT_KEYS_TO_SKIP:
@@ -270,7 +280,10 @@ def build_env_values(payload: Mapping[str, object]) -> BuildResult:
 
     for index, organization in enumerate(organizations, start=1):
         if not isinstance(organization, Mapping):
-            raise SetupError(f"'organizations[{index}]' must be an object.")
+            raise SetupError(
+                "The setup code didn't include valid organization details. "
+                "Get a fresh code from the setup page and try again."
+            )
         collect_organization_metadata(
             env_values,
             skipped_null_keys,
@@ -291,21 +304,32 @@ def build_env_values(payload: Mapping[str, object]) -> BuildResult:
 
 
 def _payload_from_response(response: httpx.Response) -> Mapping[str, object]:
+    # These messages are shown to non-technical users verbatim in the setup
+    # screen; technical detail stays parenthesized at the end.
+    _UNEXPECTED = (
+        "The setup service sent back something unexpected. Try again; "
+        "if it keeps failing, contact support."
+    )
     if response.status_code >= 400:
         detail = response.text.strip() or response.reason_phrase
-        raise SetupError(f"Setup request failed ({response.status_code}): {detail}")
+        raise SetupError(
+            f"The setup service reported a problem (code "
+            f"{response.status_code}). Check that the setup code was pasted "
+            f"correctly, or try again in a minute; if it keeps failing, "
+            f"contact support. ({detail})"
+        )
 
     try:
         payload = response.json()
     except ValueError as exc:
-        raise SetupError("Setup request returned invalid JSON.") from exc
+        raise SetupError(_UNEXPECTED) from exc
 
     if not isinstance(payload, dict):
-        raise SetupError("Setup request returned non-object JSON.")
+        raise SetupError(_UNEXPECTED)
 
     cleaned_payload = drop_nulls(payload)
     if not isinstance(cleaned_payload, dict):
-        raise SetupError("Setup request returned invalid object JSON.")
+        raise SetupError(_UNEXPECTED)
     return cleaned_payload
 
 
@@ -385,12 +409,12 @@ def write_env_file(env_file: Path, new_values: Mapping[str, str]) -> WriteResult
 
 
 def summarize_env_write(build_result: BuildResult, write_result: WriteResult) -> str:
-    """One-line toast for the credentials task."""
-    parts = [f"{len(write_result.appended_new_keys)} new key(s)"]
+    """One-line toast for the credentials task, in plain language."""
+    parts = [f"{len(write_result.appended_new_keys)} added"]
     if write_result.appended_conflicting_keys:
-        parts.append(f"{len(write_result.appended_conflicting_keys)} conflicting value(s) appended")
+        parts.append(f"{len(write_result.appended_conflicting_keys)} updated")
     if write_result.skipped_existing_keys:
-        parts.append(f"{len(write_result.skipped_existing_keys)} already set")
+        parts.append(f"{len(write_result.skipped_existing_keys)} already saved")
     if build_result.skipped_null_keys:
-        parts.append(f"{len(build_result.skipped_null_keys)} null value(s) skipped")
-    return f"Wrote {ENV_FILE.name}: " + ", ".join(parts)
+        parts.append(f"{len(build_result.skipped_null_keys)} skipped (empty)")
+    return "Saved your credentials: " + ", ".join(parts)

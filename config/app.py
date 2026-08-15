@@ -3,10 +3,12 @@ run it) with three independent tasks:
 
 1. Caption credentials → .env (config/env.py)
 2. Sidecar naming preference → repo-root settings.json (repo_settings.py)
-3. Statusline + usage cache → .claude/settings.local.json (config/statusline.py).
-   Respects a global layout: when the user-level ~/.claude/settings.json
-   statusline already runs this repo's tee, nothing is written locally
-   (a local statusLine would shadow it inside this repo).
+3. Statusline + usage cache → installed account-wide into ~/.claude
+   (config/statusline.py): the statusline script (ccstatus.py) is copied to ~/.claude/hooks/
+   and ~/.claude/settings.json points its statusLine at it. Nothing
+   statusline-related is written inside the repo's .claude/; a leftover
+   repo-local statusLine (which would shadow the account-wide one) is
+   removed on install.
 
 Run with `uv run config.py` (a thin launcher for this module).
 TUI-only; no plain fallback.
@@ -15,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 from pathlib import Path
 
 import httpx
@@ -27,6 +28,7 @@ from .common import (
     ENV_FILE,
     LOCAL_SETTINGS_PATH,
     REPO_ROOT,
+    USER_CLAUDE_DIR,
     USER_SETTINGS_PATH,
     SetupError,
 )
@@ -41,26 +43,21 @@ from .env import (
     write_env_file,
 )
 from .statusline import (
-    PINNED_CCSTATUSLINE_VERSION,
     build_statusline_command,
     detect_python3,
-    detect_renderer,
-    merge_local_settings,
+    install_state,
+    install_user_statusline,
+    installed_script,
     remove_local_statusline,
     statusline_settings,
-    uses_repo_tee,
+    uses_installed_script,
 )
-
-# StatusLineScreen result meaning "remove the local statusLine and let the
-# global (~/.claude/settings.json) tee'd statusline apply here". A real
-# command always contains the tee path, so it can never collide.
-USE_GLOBAL = "__use-global__"
 
 TASK_ORDER = ("env", "sidecar", "statusline")
 TASK_LABELS = {
-    "env": "Caption credentials",
-    "sidecar": "Sidecar naming",
-    "statusline": "Statusline + usage cache",
+    "env": "Caption sign-in",
+    "sidecar": "Document copy naming",
+    "statusline": "Status bar & usage meter",
 }
 
 
@@ -136,43 +133,52 @@ def hub_status(repo_root: Path) -> dict[str, str]:
     rows: dict[str, str] = {}
     try:
         values = read_existing_env_values(Path(repo_root) / ".env")
+        noun = "credential" if len(values) == 1 else "credentials"
         rows["env"] = (
-            f"configured ({len(values)} key(s) in .env)" if values else "not configured"
+            f"ready ({len(values)} {noun} saved)" if values else "not set up yet"
         )
     except Exception as exc:
-        rows["env"] = f".env unreadable: {exc}"
+        rows["env"] = (
+            "couldn't read your saved credentials — open this item to "
+            f"re-enter them ({exc})"
+        )
     try:
         rows["sidecar"] = (
-            "dotfile style (.contract.docx.md)"
+            "copies are hidden (.contract.docx.md)"
             if repo_settings.read_sidecar_dotfiles()
-            else "visible style (contract.docx.md)"
+            else "copies are visible (contract.docx.md)"
         )
     except Exception as exc:
-        rows["sidecar"] = f"settings.json invalid: {exc} — fix or delete it"
+        rows["sidecar"] = (
+            "a settings file has a problem — ask for help, or delete "
+            f"settings.json and run setup again ({exc})"
+        )
     try:
-        current = statusline_settings(Path(repo_root) / ".claude" / "settings.local.json")
-        global_tee = uses_repo_tee(
-            statusline_settings(USER_SETTINGS_PATH), Path(repo_root)
+        state = install_state(Path(repo_root), USER_CLAUDE_DIR)
+        wired = uses_installed_script(
+            statusline_settings(USER_SETTINGS_PATH), USER_CLAUDE_DIR
         )
-        recommended = build_statusline_command(
-            detect_python3(), Path(repo_root), detect_renderer(Path(repo_root))
+        local_override = (
+            statusline_settings(
+                Path(repo_root) / ".claude" / "settings.local.json"
+            )
+            is not None
         )
-        if current is None:
+        if state == "missing" or not wired:
+            rows["statusline"] = "not set up yet"
+        elif local_override:
             rows["statusline"] = (
-                "configured globally (~/.claude/settings.json runs the tee)"
-                if global_tee
-                else "not configured"
+                "needs attention — this folder overrides your account-wide "
+                "status bar (open this item to fix)"
             )
-        elif global_tee:
+        elif state == "outdated":
             rows["statusline"] = (
-                "local statusLine overrides the global tee'd statusline"
+                "needs attention — an updated status bar is ready to install"
             )
-        elif current == recommended:
-            rows["statusline"] = "configured"
         else:
-            rows["statusline"] = "differs from recommended"
+            rows["statusline"] = "ready — installed account-wide, works in every folder"
     except Exception as exc:
-        rows["statusline"] = f"error: {exc}"
+        rows["statusline"] = f"couldn't check this item ({exc})"
     return rows
 
 
@@ -184,8 +190,11 @@ from textual import on, work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.containers import Horizontal, Vertical  # noqa: E402
 from textual.screen import Screen, ScreenResultType  # noqa: E402
+from textual.theme import Theme  # noqa: E402
 from textual.widgets import (  # noqa: E402
     Button,
+    Footer,
+    Header,
     Input,
     LoadingIndicator,
     OptionList,
@@ -194,6 +203,29 @@ from textual.widgets import (  # noqa: E402
     Static,
 )
 from textual.widgets.option_list import Option  # noqa: E402
+
+# Company brand palette. Exact hexes need a truecolor terminal (256-color
+# terminals quantize: the gold lands near #af8700). The palette has no
+# red/green, so error/success stay conventional for visibility — muted warm
+# shades chosen to sit well next to the gold and warm grays.
+BRAND_THEME = Theme(
+    name="velawood",
+    primary="#CB9612",  # gold: borders, list highlight, primary buttons, spinner
+    secondary="#D0CFC9",
+    accent="#CB9612",
+    warning="#CB9612",
+    error="#CE5B4C",
+    success="#8A9A5B",
+    foreground="#F5F4F0",
+    background="#000000",
+    surface="#262324",  # midpoint of the brand blacks: input/button/list fills
+    panel="#444142",
+    dark=True,
+    variables={
+        "button-color-foreground": "#000000",  # black text on gold buttons
+        "input-selection-background": "#CB9612 35%",
+    },
+)
 
 
 class _DismissOnce:
@@ -212,7 +244,7 @@ class TaskScreen(_DismissOnce, Screen[ScreenResultType]):
     finish with None. (Must subclass Screen — textual only collects
     BINDINGS from DOMNode subclasses and @on handlers via its metaclass.)"""
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [("escape", "cancel", "Back")]
 
     @on(Button.Pressed, "#cancel")
     def _cancel_pressed(self) -> None:
@@ -226,14 +258,12 @@ class HubScreen(_DismissOnce, Screen[str]):
     """Result: task id ("env" | "sidecar" | "statusline") | "all" | "done"."""
 
     CSS = """
-    HubScreen { align: center middle; }
-    #hub { width: 90; max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
+    #hub { width: 90; }
     #banner { color: $warning; margin-bottom: 1; }
     #rows { height: auto; margin-bottom: 1; }
     #buttons { height: auto; }
-    Button { margin-right: 2; }
     """
-    BINDINGS = [("escape", "done", "Done")]
+    BINDINGS = [("escape", "done", "Close")]
 
     def __init__(self, rows: dict[str, str], update_notice: str) -> None:
         super().__init__()
@@ -241,21 +271,26 @@ class HubScreen(_DismissOnce, Screen[str]):
         self._update_notice = update_notice
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         with Vertical(id="hub"):
             banner = Static(self._update_notice, id="banner")
             banner.display = bool(self._update_notice)
             yield banner
-            yield Static("Select a task (Enter), or run everything:")
+            yield Static("Use ↑/↓ and Enter to open an item, or set up everything at once:")
             yield OptionList(
                 *(
-                    Option(f"{TASK_LABELS[key]} — {self._rows.get(key, '?')}", id=key)
+                    Option(
+                        f"{TASK_LABELS[key]} — {self._rows.get(key, 'checking…')}",
+                        id=key,
+                    )
                     for key in TASK_ORDER
                 ),
                 id="rows",
             )
             with Horizontal(id="buttons"):
-                yield Button("Run everything", id="all", variant="primary")
-                yield Button("Done", id="done")
+                yield Button("Set up everything", id="all", variant="primary")
+                yield Button("Close", id="done")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#all", Button).focus()
@@ -282,20 +317,21 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
     """Masked token entry + async fetch. Result: payload dict or None."""
 
     CSS = """
-    TokenScreen { align: center middle; }
-    #box { width: 90; max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
-    #error { color: $error; }
+    #box { width: 90; }
     #loading { height: 1; }
-    Button { margin-right: 2; }
     """
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         with Vertical(id="box"):
             yield Static(
-                f"Open {SETUP_PAGE_URL} in your browser (shift/cmd + click) "
-                "and paste in the authentication token:"
+                "Connect this toolkit to your Caption account:\n\n"
+                f"1. Open this link in your browser: {SETUP_PAGE_URL}\n"
+                "   (hold Cmd and click, or copy and paste it into your browser)\n"
+                "2. Sign in if asked, then copy the setup code shown.\n"
+                "3. Paste the code below and press Submit."
             )
-            yield Input(password=True, placeholder="Authentication token", id="token")
+            yield Input(password=True, placeholder="Paste your setup code here", id="token")
             loading = LoadingIndicator(id="loading")
             loading.display = False
             yield loading
@@ -303,6 +339,7 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
             with Horizontal():
                 yield Button("Submit", id="submit", variant="primary")
                 yield Button("Cancel", id="cancel")
+        yield Footer()
 
     def _set_busy(self, busy: bool) -> None:
         self.query_one("#loading", LoadingIndicator).display = busy
@@ -315,10 +352,20 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
     async def _fetch(self, token: str) -> None:
         try:
             payload = await fetch_setup_payload_async(token)
-        except (SetupError, httpx.HTTPError) as exc:
+        except httpx.HTTPError:
+            # Transport-level failure (offline, DNS, timeout) — the token is
+            # probably fine, so don't blame it.
             if self.is_attached:
                 self._set_busy(False)
-                self._show_error(f"{exc} — fix the token and retry.")
+                self._show_error(
+                    "Couldn't reach the setup service. Check your internet "
+                    "connection and try again."
+                )
+            return
+        except SetupError as exc:
+            if self.is_attached:
+                self._set_busy(False)
+                self._show_error(str(exc))
             return
         if self.is_attached and not self._finished:
             self.finish(payload)
@@ -326,7 +373,7 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
     def _submit(self) -> None:
         token = self.query_one("#token", Input).value.strip()
         if not token:
-            self._show_error("No authentication token provided.")
+            self._show_error("Please paste a setup code first.")
             return
         self._show_error("")
         self._set_busy(True)
@@ -345,10 +392,7 @@ class OrgScreen(TaskScreen["int | None"]):
     """RadioSet of organizations; pushed only when >1. Result: 0-based index."""
 
     CSS = """
-    OrgScreen { align: center middle; }
-    #box { width: 80; max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
-    #error { color: $error; }
-    Button { margin-right: 2; }
+    #box { width: 80; }
     """
 
     def __init__(self, choices: list[tuple[str, str]]) -> None:
@@ -356,22 +400,30 @@ class OrgScreen(TaskScreen["int | None"]):
         self._choices = choices
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         with Vertical(id="box"):
-            yield Static("Multiple organizations found. Select which organization's credentials to load:")
+            yield Static(
+                "Your account belongs to more than one organization. "
+                "Pick the one to use here:"
+            )
             yield RadioSet(
-                *(RadioButton(f"{name}: {org_id}") for name, org_id in self._choices),
+                *(
+                    RadioButton(f"{name} ({org_id})" if org_id else name)
+                    for name, org_id in self._choices
+                ),
                 id="orgs",
             )
             yield Static("", id="error")
             with Horizontal():
                 yield Button("Select", id="select", variant="primary")
                 yield Button("Cancel", id="cancel")
+        yield Footer()
 
     @on(Button.Pressed, "#select")
     def _select(self) -> None:
         index = self.query_one("#orgs", RadioSet).pressed_index
         if index < 0:  # -1 when nothing selected
-            self.query_one("#error", Static).update("Select an organization first.")
+            self.query_one("#error", Static).update("Please pick an organization first.")
             return
         self.finish(index)
 
@@ -380,9 +432,7 @@ class SidecarScreen(TaskScreen["bool | None"]):
     """Result: sidecar_dotfiles value, or None on cancel."""
 
     CSS = """
-    SidecarScreen { align: center middle; }
-    #box { width: 80; max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
-    Button { margin-right: 2; }
+    #box { width: 80; }
     """
 
     def __init__(self, current: bool | None) -> None:
@@ -390,26 +440,33 @@ class SidecarScreen(TaskScreen["bool | None"]):
         self._current = current
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         with Vertical(id="box"):
-            yield Static("Converted-markdown sidecar naming style:")
+            yield Static(
+                "When this toolkit reads a Word file or PDF, it saves a "
+                "plain-text copy next to the original (for example "
+                "contract.docx → contract.docx.md). How should those copies "
+                "be named?"
+            )
             yield RadioSet(
                 RadioButton(
-                    "contract.docx.md (visible, default)",
+                    "Visible — contract.docx.md shows up next to the original (recommended)",
                     value=self._current is not True,
                 ),
                 RadioButton(
-                    ".contract.docx.md (dot-prefixed, hidden in Finder/ls)",
+                    "Hidden — .contract.docx.md stays hidden in Finder and file lists",
                     value=self._current is True,
                 ),
                 id="style",
             )
             yield Static(
-                "The next `uv run startup.py` migrates existing sidecars to "
-                "the selected style."
+                "Your choice takes effect the next time documents are "
+                "processed (uv run startup.py)."
             )
             with Horizontal():
                 yield Button("Save", id="save", variant="primary")
                 yield Button("Cancel", id="cancel")
+        yield Footer()
 
     @on(Button.Pressed, "#save")
     def _save(self) -> None:
@@ -420,136 +477,91 @@ class SidecarScreen(TaskScreen["bool | None"]):
 
 
 class StatusLineScreen(TaskScreen["str | None"]):
-    """Python-path input + live command preview. Result: confirmed command."""
+    """Python-path input + live command preview. Result: the python3 path
+    to install with, or None on cancel."""
 
     CSS = """
-    StatusLineScreen { align: center middle; }
-    #box { width: 100; max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
-    #preview { color: $success; margin: 1 0; }
+    #box { width: 100; }
+    #preview { color: $success; margin: 0 0 1 0; }
     #note { color: $text-muted; margin-bottom: 1; }
-    #global { color: $warning; margin-bottom: 1; }
-    Button { margin-right: 2; }
     """
 
-    def __init__(
-        self, python3: str, renderer: str | None, *, global_tee: bool = False
-    ) -> None:
+    def __init__(self, python3: str, *, update: bool = False) -> None:
         super().__init__()
         self._python3 = python3
-        self._renderer = renderer
-        self._global_tee = global_tee
+        self._update = update
 
-    def _command(self) -> str:
-        python3 = self.query_one("#python", Input).value.strip() or self._python3
-        return build_statusline_command(python3, REPO_ROOT, self._renderer)
-
-    def _note_text(self) -> str:
-        if self._renderer:
-            return (
-                f"Renderer: pinned ccstatusline at {self._renderer} "
-                "(tee pipes into it)."
-            )
-        note = (
-            "Renderer: none — the tee's --render mode prints a plain "
-            "statusline (no Node required)."
-        )
-        if shutil.which("npm"):
-            note += (
-                " Optional: install a pinned ccstatusline "
-                f"({PINNED_CCSTATUSLINE_VERSION}) with the button below."
-            )
-        return note
+    def _python_value(self) -> str:
+        return self.query_one("#python", Input).value.strip() or self._python3
 
     def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
         with Vertical(id="box"):
-            yield Static("Statusline + usage cache → .claude/settings.local.json")
-            if self._global_tee:
-                yield Static(
-                    "Your user-level ~/.claude/settings.json statusline already "
-                    "runs this repo's tee, so the usage cache refreshes in every "
-                    "folder. A local command written here would override it "
-                    "inside this repo — choose \"Use global\" to remove the "
-                    "local statusLine instead.",
-                    id="global",
-                )
-            yield Static("python3 for the statusline command:")
+            yield Static(
+                "Status bar & usage meter — shows your Claude usage and "
+                "session info in a bar at the bottom of Claude Code. It "
+                "installs into your home folder (~/.claude), so it works "
+                "in every folder, not just this one."
+            )
+            yield Static(
+                "Where Python lives on this computer (pre-filled "
+                "automatically — leave as is unless you know it's wrong):"
+            )
             yield Input(value=self._python3, id="python")
-            # _command() queries #python, which is not mounted during
+            yield Static("Behind the scenes, this command runs the status bar:")
+            # _python_value() queries #python, which is not mounted during
             # compose — build the initial preview from the same default.
             yield Static(
-                build_statusline_command(self._python3, REPO_ROOT, self._renderer),
+                build_statusline_command(
+                    self._python3, installed_script(USER_CLAUDE_DIR)
+                ),
                 id="preview",
             )
-            yield Static(self._note_text(), id="note")
+            yield Static(
+                "Nothing extra to install — no internet needed.", id="note"
+            )
             with Horizontal():
-                if self._global_tee:
-                    yield Button("Use global", id="useglobal", variant="primary")
-                    yield Button("Apply local", id="apply")
-                else:
-                    yield Button("Apply", id="apply", variant="primary")
-                if self._renderer is None and shutil.which("npm"):
-                    yield Button("Install ccstatusline", id="install")
+                yield Button(
+                    "Install update" if self._update else "Install status bar",
+                    id="apply",
+                    variant="primary",
+                )
                 yield Button("Cancel", id="cancel")
+        yield Footer()
 
     @on(Input.Changed, "#python")
     def _refresh_preview(self) -> None:
-        self.query_one("#preview", Static).update(self._command())
-
-    @work(exclusive=True)
-    async def _install(self) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            "npm",
-            "install",
-            "--prefix",
-            str(REPO_ROOT / ".statusline"),
-            f"ccstatusline@{PINNED_CCSTATUSLINE_VERSION}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), 180)
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-        if not self.is_attached:
-            return
-        if proc.returncode == 0:
-            self._renderer = detect_renderer(REPO_ROOT)
-            self.query_one("#note", Static).update(self._note_text())
-            self.query_one("#preview", Static).update(self._command())
-            try:
-                self.query_one("#install", Button).remove()
-            except Exception:
-                pass
-        else:
-            detail = (stderr or b"").decode(errors="replace").strip().splitlines()
-            self.query_one("#note", Static).update(
-                "npm install failed: " + (detail[-1] if detail else "unknown error")
+        self.query_one("#preview", Static).update(
+            build_statusline_command(
+                self._python_value(), installed_script(USER_CLAUDE_DIR)
             )
-
-    @on(Button.Pressed, "#install")
-    def _install_pressed(self) -> None:
-        self.query_one("#note", Static).update("Installing ccstatusline…")
-        self._install()
+        )
 
     @on(Button.Pressed, "#apply")
     def _apply(self) -> None:
-        self.finish(self._command())
-
-    @on(Button.Pressed, "#useglobal")
-    def _use_global(self) -> None:
-        self.finish(USE_GLOBAL)
+        self.finish(self._python_value())
 
 
 class SetupApp(App[int]):
     """Hub app: one @work async driver loops hub → task → refreshed hub."""
 
-    TITLE = "claude-template setup"
+    TITLE = "Document Toolkit Setup"
+
+    # Shared rules for every screen; per-screen CSS keeps only widths and
+    # screen-specific widgets. Colors come from BRAND_THEME via $-variables.
+    CSS = """
+    Screen { align: center middle; }
+    #hub, #box { max-width: 100%; height: auto; border: round $primary; padding: 1 2; }
+    Button { margin-right: 2; }
+    #error { color: $error; }
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.exit_code = 0
         self.update_notice = ""
+        self.register_theme(BRAND_THEME)
+        self.theme = BRAND_THEME.name
 
     def on_mount(self) -> None:
         self._run_hub()
@@ -568,12 +580,20 @@ class SetupApp(App[int]):
                     try:
                         await self._run_task(task)
                     except (SetupError, RepoSettingsError, OSError, httpx.HTTPError) as exc:
-                        self.notify(f"{TASK_LABELS[task]} failed: {exc}", severity="error")
+                        self.notify(
+                            f"{TASK_LABELS[task]} didn't finish. You can try "
+                            f"it again from the menu. ({exc})",
+                            severity="error",
+                        )
                         self.exit_code = 1
         except Exception as exc:  # a driver crash must still exit nonzero
             self.exit_code = 1
             try:
-                self.notify(f"setup crashed: {exc}", severity="error")
+                self.notify(
+                    "Something went wrong and setup had to stop. Nothing was "
+                    f"damaged — you can close this window and try again. ({exc})",
+                    severity="error",
+                )
             except Exception:
                 pass
         self.exit(self.exit_code)
@@ -586,10 +606,10 @@ class SetupApp(App[int]):
         if not behind:
             return
         self.update_notice = (
-            f"A newer version of this toolkit is available ({behind} update(s) "
-            f"behind). To update: quit setup (Done), run "
-            f"`git -C {REPO_ROOT} pull --ff-only`, then relaunch "
-            "`uv run config.py`."
+            "An update to this toolkit is available.\n"
+            'To install it: press "Close" below, then run these two commands:\n'
+            f"    git -C {REPO_ROOT} pull --ff-only\n"
+            "    uv run config.py"
         )
         screen = self.screen
         if isinstance(screen, HubScreen):
@@ -628,44 +648,35 @@ class SetupApp(App[int]):
             return
         repo_settings.update_json_object({"sidecar_dotfiles": value})
         self.notify(
-            "Sidecar naming saved. The next `uv run startup.py` migrates "
-            "existing sidecars."
+            "Naming preference saved. Existing copies will be renamed the "
+            "next time documents are processed."
         )
 
     async def _task_statusline(self) -> None:
-        python3 = detect_python3()
-        renderer = detect_renderer(REPO_ROOT)
-        local = statusline_settings(LOCAL_SETTINGS_PATH)
-        global_tee = uses_repo_tee(statusline_settings(USER_SETTINGS_PATH), REPO_ROOT)
-        if global_tee and local is None:
+        state = install_state(REPO_ROOT, USER_CLAUDE_DIR)
+        wired = uses_installed_script(
+            statusline_settings(USER_SETTINGS_PATH), USER_CLAUDE_DIR
+        )
+        local_override = statusline_settings(LOCAL_SETTINGS_PATH) is not None
+        if state == "current" and wired and not local_override:
             self.notify(
-                "Statusline configured globally: ~/.claude/settings.json runs "
-                "the tee, so the usage cache refreshes in every folder. Nothing "
-                "to write locally (a local statusLine would override it)."
+                "Your status bar is already installed account-wide — it "
+                "works in every folder. Nothing to change here."
             )
             return
-        recommended = build_statusline_command(python3, REPO_ROOT, renderer)
-        if not global_tee and local == recommended:
-            self.notify("Statusline already configured.")
-            return
-        command = await self.push_screen_wait(
-            StatusLineScreen(python3, renderer, global_tee=global_tee)
+        python3 = await self.push_screen_wait(
+            StatusLineScreen(detect_python3(), update=state == "outdated")
         )
-        if command is None:
+        if python3 is None:
             return
-        if command == USE_GLOBAL:
-            if remove_local_statusline(LOCAL_SETTINGS_PATH):
-                self.notify(
-                    "Local statusLine removed; the global "
-                    "~/.claude/settings.json statusline applies here now."
-                )
-            else:
-                self.notify("No local statusLine to remove.")
-            return
-        if merge_local_settings(LOCAL_SETTINGS_PATH, command):
-            self.notify(f"Statusline written to {LOCAL_SETTINGS_PATH}.")
-        else:
-            self.notify("Statusline already configured.")
+        install_user_statusline(REPO_ROOT, USER_CLAUDE_DIR, python3)
+        removed = remove_local_statusline(LOCAL_SETTINGS_PATH)
+        message = (
+            "Status bar installed account-wide — it now works in every folder."
+        )
+        if removed:
+            message += " (This folder's old override was removed.)"
+        self.notify(message)
 
 
 def main() -> int:

@@ -1,5 +1,7 @@
-"""Statusline task: build the statusLine command and merge it into
-.claude/settings.local.json. Pure helpers (§A.2); no TUI here.
+"""Statusline task: install the statusline (ccstatus.py, which renders
+the bar and caches the usage payload) into the user's ~/.claude. Nothing
+statusline-related is written inside the repo's .claude/. Pure helpers; no
+TUI here.
 """
 from __future__ import annotations
 
@@ -13,9 +15,7 @@ from pathlib import Path
 
 from .common import SetupError
 
-# Pinned at implementation time (2026-08); upgrading is a one-line change
-# here — never a per-refresh `@latest` resolution in the statusline command.
-PINNED_CCSTATUSLINE_VERSION = "2.2.27"
+SCRIPT_FILENAME = "ccstatus.py"
 
 
 def _is_venv_path_entry(entry: str, virtual_env: str | None) -> bool:
@@ -57,45 +57,51 @@ def _quote_for_platform(arg: str, platform: str) -> str:
     return shlex.quote(arg)
 
 
-def detect_renderer(repo_root: Path) -> str | None:
-    """Pinned local ccstatusline executable path, or None."""
-    bin_dir = Path(repo_root) / ".statusline" / "node_modules" / ".bin"
-    candidates = ["ccstatusline.cmd", "ccstatusline"] if sys.platform == "win32" else ["ccstatusline"]
-    for name in candidates:
-        exe = bin_dir / name
-        if exe.exists():
-            return str(exe)
-    return None
+def script_source(repo_root: Path) -> Path:
+    """The in-repo statusline script (the install source)."""
+    return Path(repo_root) / SCRIPT_FILENAME
+
+
+def installed_script(user_claude_dir: Path) -> Path:
+    """Where the statusline script lives once installed."""
+    return Path(user_claude_dir) / "hooks" / SCRIPT_FILENAME
 
 
 def build_statusline_command(
     python3: str,
-    repo_root: Path,
-    renderer: str | None,
+    script_path: Path,
     *,
     platform: str = sys.platform,
 ) -> str:
-    """The statusLine command for .claude/settings.local.json.
-
-    renderer=None → tee-only `--render` (zero Node); renderer=<path> → tee
-    piped into the pinned local install. Never `npx -y ...@latest`.
-    """
-    tee = str(Path(repo_root) / ".claude" / "hooks" / "ccstatus-tee.py")
+    """The statusLine command for ~/.claude/settings.json: the installed
+    statusline script. No Node, no external renderer."""
     quoted_python = _quote_for_platform(python3, platform)
-    quoted_tee = _quote_for_platform(tee, platform)
-    if renderer is None:
-        return f"{quoted_python} {quoted_tee} --render"
-    return f"{quoted_python} {quoted_tee} | {_quote_for_platform(renderer, platform)}"
+    quoted_script = _quote_for_platform(str(script_path), platform)
+    return f"{quoted_python} {quoted_script}"
 
 
-def uses_repo_tee(command: str | None, repo_root: Path) -> bool:
-    """True when a statusLine command runs this repo's ccstatus-tee.py —
-    e.g. a user-level (~/.claude/settings.json) command piping the tee into
-    a personal renderer, which refreshes the usage cache in every folder.
-    Substring check: quoting on either platform keeps the raw path intact."""
+def uses_installed_script(command: str | None, user_claude_dir: Path) -> bool:
+    """True when a statusLine command runs the installed script (which is
+    what refreshes the usage cache the guard reads). Substring check:
+    quoting on either platform keeps the raw path intact."""
     if not command:
         return False
-    return str(Path(repo_root) / ".claude" / "hooks" / "ccstatus-tee.py") in command
+    return str(installed_script(user_claude_dir)) in command
+
+
+def install_state(repo_root: Path, user_claude_dir: Path) -> str:
+    """'missing' | 'outdated' | 'current' — the installed copy vs the repo
+    source, compared by content so repo updates surface in the hub."""
+    target = installed_script(user_claude_dir)
+    try:
+        installed = target.read_bytes()
+    except OSError:
+        return "missing"
+    try:
+        source = script_source(repo_root).read_bytes()
+    except OSError:
+        return "current"  # no source to compare against; don't nag
+    return "current" if installed == source else "outdated"
 
 
 def statusline_settings(path: Path) -> str | None:
@@ -112,19 +118,31 @@ def statusline_settings(path: Path) -> str | None:
     return None
 
 
-def merge_local_settings(path: Path, statusline_cmd: str) -> bool:
-    """Set statusLine in settings.local.json, preserving every other key
-    (permissions, prefersReducedMotion, ...). Returns False when already
-    identical (skip). Malformed JSON → SetupError; never clobber."""
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError as exc:
-            raise SetupError(f"{path} is not valid JSON ({exc}); fix or delete it first.")
-        if not isinstance(data, dict):
-            raise SetupError(f"{path} does not contain a JSON object; fix or delete it first.")
-    else:
-        data = {}
+def _load_settings_or_raise(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise SetupError(
+            f"A settings file has a problem and setup can't change it "
+            f"safely — ask for help, or delete it and run setup again. "
+            f"(File: {path}; {exc})"
+        )
+    if not isinstance(data, dict):
+        raise SetupError(
+            f"A settings file has a problem and setup can't change it "
+            f"safely — ask for help, or delete it and run setup again. "
+            f"(File: {path}; not in the expected format)"
+        )
+    return data
+
+
+def merge_statusline_settings(path: Path, statusline_cmd: str) -> bool:
+    """Set statusLine in a Claude settings file, preserving every other key
+    (permissions, hooks, env, ...). Returns False when already identical
+    (skip). Malformed JSON → SetupError; never clobber."""
+    data = _load_settings_or_raise(path)
     entry = {"type": "command", "command": statusline_cmd, "padding": 0}
     if data.get("statusLine") == entry:
         return False
@@ -135,20 +153,46 @@ def merge_local_settings(path: Path, statusline_cmd: str) -> bool:
 
 
 def remove_local_statusline(path: Path) -> bool:
-    """Delete the statusLine block from settings.local.json (so a global
-    tee'd statusline applies inside this repo too), preserving every other
-    key. Returns False when there is nothing to remove. Malformed JSON →
-    SetupError; never clobber."""
+    """Delete the statusLine block from the repo's settings.local.json (a
+    leftover local statusLine would shadow the account-wide one inside this
+    repo), preserving every other key. Returns False when there is nothing
+    to remove. Malformed JSON → SetupError; never clobber."""
     if not path.exists():
         return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        raise SetupError(f"{path} is not valid JSON ({exc}); fix or delete it first.")
-    if not isinstance(data, dict):
-        raise SetupError(f"{path} does not contain a JSON object; fix or delete it first.")
+    data = _load_settings_or_raise(path)
     if "statusLine" not in data:
         return False
     del data["statusLine"]
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return True
+
+
+def install_user_statusline(
+    repo_root: Path,
+    user_claude_dir: Path,
+    python3: str,
+    *,
+    platform: str = sys.platform,
+) -> str:
+    """Install the statusline account-wide: copy the script into
+    ~/.claude/hooks/ and point statusLine in ~/.claude/settings.json at it.
+    Returns the command written. Malformed settings → SetupError (the copy
+    is harmless on its own, so it happens first)."""
+    source = script_source(repo_root)
+    if not source.exists():
+        raise SetupError(
+            f"The statusline script is missing from this toolkit "
+            f"({source}) — update the toolkit (git pull) and try again."
+        )
+    target = installed_script(user_claude_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    try:
+        os.chmod(target, 0o755)
+    except OSError:
+        pass  # the command runs it via python3, not the execute bit
+    command = build_statusline_command(python3, target, platform=platform)
+    merge_statusline_settings(
+        Path(user_claude_dir) / "settings.json", command
+    )
+    return command
