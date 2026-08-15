@@ -11,7 +11,7 @@ nothing (fails open) — the only visible complaint is in the manual mode.
 At session start, if any usage window is >90%, a SessionStart hook injects
 additionalContext asking Claude to offer a one-session stop-at-99% guard.
 Off by default; declining or ignoring = no guard. Arming is keyed to
-session_id (a flag file in ~/.claude/ccguard/), so it can never outlive the
+session_id (a flag file in .ccguard/ next to this script), so it can never outlive the
 session. Every hook mode ALWAYS exits 0 and fails open: a missing or stale
 cache can warn, but can never block work.
 
@@ -34,8 +34,8 @@ import sys
 import time
 
 CACHE = os.path.expanduser("~/legal/ccstatus.json")
-GUARD_DIR = os.path.expanduser("~/.claude/ccguard")
 SCRIPT_PATH = os.path.abspath(__file__)
+GUARD_DIR = os.path.join(os.path.dirname(SCRIPT_PATH), ".ccguard")
 FLAG_MAX_AGE_SECONDS = 7 * 24 * 3600
 OFFER_PERCENT = 90.0
 
@@ -140,6 +140,16 @@ def prune_flags():
                 pass
     except OSError:
         pass
+    remove_dir_if_empty()
+
+
+def remove_dir_if_empty():
+    """The PreToolUse hook command shell-tests for GUARD_DIR before spawning
+    Python, so the directory must exist exactly when at least one flag does."""
+    try:
+        os.rmdir(GUARD_DIR)
+    except OSError:
+        pass
 
 
 def read_session_id_from_stdin():
@@ -210,6 +220,7 @@ def mode_disarm(session_id):
         print(f"usage guard disarmed for session {session_id}")
     except FileNotFoundError:
         print(f"usage guard was not armed for session {session_id}")
+    remove_dir_if_empty()
     return 0
 
 

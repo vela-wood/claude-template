@@ -12,6 +12,7 @@ USERPREFS.md
 /.uv-cache/
 .DS_Store
 /.osgrep
+/.ccguard/
 /caption_cache/
 .env
 *.cfg
