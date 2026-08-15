@@ -37,7 +37,7 @@ Then proceed to the main task.
 
 ### 4.2 startup.py (for documents)
 
-`startup.py` converts office documents and emails to Markdown sidecars named `<original-filename>.<extension>.md` and maintains indexes for the working folder:
+`startup.py` converts office documents and emails to Markdown sidecars named `<original-filename>.<extension>.md` — or, when the repo-root `settings.json` (user-local, distinct from `.claude/settings.json`) sets `"sidecar_dotfiles": true` (a strict JSON boolean), dot-prefixed `.<original-filename>.<extension>.md` — and maintains indexes for the working folder:
 
 | Input | Converter | Notes |
 |---|---|---|
@@ -62,8 +62,8 @@ Do not edit source files while `startup.py` is running; changes made mid-run are
 Procedure:
 1. **Preferred input = already-converted file**
    - Prefer the converted markdown file over the binary file:
-     - For `foo.pdf`, read `foo.pdf.md`.
-     - For `foo.docx`, read `foo.docx.md`.
+     - For `foo.pdf`, read `foo.pdf.md` **or** `.foo.pdf.md` (dotfile style).
+     - For `foo.docx`, read `foo.docx.md` **or** `.foo.docx.md`.
    - Be mindful of edited markdown, which will contain `eYYYYMMDD` in the filename as mentioned above.
 
 2. **Conversion when needed**
@@ -96,7 +96,13 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 
 - ONLY use the /redline skill to edit word documents. Do not use any other method.
 
-### 4.7 Netdocs access
+### 4.7 setup_claude.py is human-only
+
+NEVER run `uv run setup_claude.py`. It opens an interactive Textual TUI
+intended for humans (same rule as bare `nd.py`). If setup looks needed,
+tell the user to run it themselves.
+
+### 4.8 Netdocs access
 
 Only search Netdocs if (1) the user explicitly requested Netdocs access AND (2) the output of `uv run startup.py` indicated Netdocs access was available.
 

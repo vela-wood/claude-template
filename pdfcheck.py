@@ -123,14 +123,18 @@ def load_ocr_index(root: Path) -> dict[str, dict[str, str]]:
     return index
 
 
-def save_ocr_index(root: Path, index: dict[str, dict[str, str]]) -> None:
-    """Write .ocr_index.csv from {pdf_relative_path: row dict}."""
+def serialize_ocr_index(index: dict[str, dict[str, str]]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=_INDEX_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for rel_path in sorted(index):
         writer.writerow(index[rel_path])
-    atomic_write_text(root / OCR_INDEX_FILENAME, buf.getvalue(), newline="")
+    return buf.getvalue()
+
+
+def save_ocr_index(root: Path, index: dict[str, dict[str, str]]) -> None:
+    """Write .ocr_index.csv from {pdf_relative_path: row dict}."""
+    atomic_write_text(root / OCR_INDEX_FILENAME, serialize_ocr_index(index), newline="")
 
 
 def index_row(rel: str, file_hash: str, c: PdfClassification) -> dict[str, str]:

@@ -66,6 +66,15 @@ def find_stop(lines, start):
     return len(lines)
 
 
+def output_stem(name: str) -> str:
+    """Strip a trailing .md, then ALL leading dots, so dot-prefixed sidecars
+    (.contract.docx.md) yield a visible output name. May return ""."""
+    stem = name
+    if stem.endswith(".md"):
+        stem = stem[: -len(".md")]
+    return stem.lstrip(".")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="+", help="converted markdown files (.md)")
@@ -80,8 +89,43 @@ def main():
     if args.start_line is not None and len(args.files) > 1:
         ap.error("--start-line only makes sense with a single input file")
 
+    # Precompute every output path BEFORE writing anything: after dot
+    # stripping, two inputs can map to one output (contract.docx.md and
+    # .contract.docx.md -> contract.docx_sigs.md). Colliding runs write
+    # nothing at all.
     failures = 0
+    planned = {}
+    inputs_by_output = {}
     for f in args.files:
+        path = Path(f)
+        stem = output_stem(path.name)
+        if not stem:
+            print(
+                f"ERROR: {f}: output name is empty after stripping the .md "
+                "suffix and leading dots; rename the file",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+        outdir = Path(args.outdir) if args.outdir else path.parent
+        out = outdir / f"{stem}_sigs.md"
+        planned[f] = out
+        inputs_by_output.setdefault(out, []).append(f)
+
+    collisions = {o: ins for o, ins in inputs_by_output.items() if len(ins) > 1}
+    if collisions:
+        for out, ins in sorted(collisions.items()):
+            print(
+                f"ERROR: inputs {', '.join(ins)} all map to {out}; "
+                "rename or split the run",
+                file=sys.stderr,
+            )
+        print("ERROR: output collision(s); nothing was written", file=sys.stderr)
+        sys.exit(1)
+
+    for f in args.files:
+        if f not in planned:
+            continue  # empty-stem failure already reported
         path = Path(f)
         if not path.exists():
             print(f"ERROR: {f}: not found", file=sys.stderr)
@@ -104,13 +148,8 @@ def main():
         stop = find_stop(lines, start)
         region = "\n".join(lines[start:stop]).strip() + "\n"
 
-        stem = path.name
-        for suffix in (".md",):
-            if stem.endswith(suffix):
-                stem = stem[: -len(suffix)]
-        outdir = Path(args.outdir) if args.outdir else path.parent
-        outdir.mkdir(parents=True, exist_ok=True)
-        out = outdir / f"{stem}_sigs.md"
+        out = planned[f]
+        out.parent.mkdir(parents=True, exist_ok=True)
 
         print(f"{path.name}: lines {start + 1}-{stop} of {len(lines)} "
               f"({len(markers)} marker line(s) seen) -> {out}")

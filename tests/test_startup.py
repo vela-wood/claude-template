@@ -114,25 +114,47 @@ def test_second_run_performs_zero_conversions(repo_tmp, monkeypatch, capsys):
     assert "0 converted, 2 unchanged, 0 failed, 0 deferred for OCR" in out
 
 
-def test_missing_token_row_triggers_reconversion(repo_tmp, capsys):
+def test_missing_token_row_is_retokenized_not_reconverted(
+    repo_tmp, monkeypatch, capsys
+):
+    """Sidecar + matching certified hash but no token row → the migration
+    repair re-tokenizes the existing sidecar instead of reconverting."""
     write_eml(repo_tmp / "a.eml")
     assert run_main() == 0
     capsys.readouterr()
-    # Remove the token row: sidecar+hash alone must not certify unchanged
+    sidecar_bytes = (repo_tmp / "a.eml.md").read_bytes()
     (repo_tmp / ".token_index.csv").write_text("file,tokens\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
     assert run_main() == 0
-    assert "1 converted, 0 unchanged" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "0 converted, 1 unchanged" in out
+    assert "1 re-tokenized" in out
+    assert calls == []
+    assert (repo_tmp / "a.eml.md").read_bytes() == sidecar_bytes
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"a.eml.md"}
 
 
-def test_invalid_token_row_triggers_reconversion(repo_tmp, capsys):
+def test_invalid_token_row_is_retokenized_not_reconverted(
+    repo_tmp, monkeypatch, capsys
+):
     write_eml(repo_tmp / "a.eml")
     assert run_main() == 0
     capsys.readouterr()
     (repo_tmp / ".token_index.csv").write_text(
         "file,tokens\na.eml.md,notanumber\n", encoding="utf-8"
     )
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
     assert run_main() == 0
-    assert "1 converted, 0 unchanged" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "0 converted, 1 unchanged" in out
+    assert calls == []
+    rows = read_csv_dict(repo_tmp / ".token_index.csv")
+    assert [r["file"] for r in rows] == ["a.eml.md"]
+    assert rows[0]["tokens"].isdigit()
 
 
 def test_hash_row_behind_sidecar_causes_reconversion(repo_tmp, capsys):
@@ -545,12 +567,20 @@ def test_nonascii_filenames_round_trip_through_indexes(repo_tmp, capsys):
     assert read_csv_dict(repo_tmp / ".token_index.csv")[0]["tokens"] == first_tokens
 
 
-def test_sidecar_naming_for_sigcheck(repo_tmp):
-    """/sigcheck consumes <name>.<ext>.md sidecar naming; keep it stable."""
+def test_sidecar_naming_for_sigcheck(repo_tmp, monkeypatch):
+    """converted_path builds both styles; other_style_path is the inverse."""
     for name in ("x.pdf", "x.docx", "x.eml", "x.msg", "x.mbox", "x.mht"):
+        monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
         assert startup.converted_path(repo_tmp / name).name == f"{name}.md"
+        assert startup.other_style_path(repo_tmp / name).name == f".{name}.md"
+        monkeypatch.setattr(startup, "SIDECAR_DOTFILES", True)
+        assert startup.converted_path(repo_tmp / name).name == f".{name}.md"
+        assert startup.other_style_path(repo_tmp / name).name == f"{name}.md"
+    monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
     with pytest.raises(ValueError):
         startup.converted_path(repo_tmp / "x.mbx")
+    with pytest.raises(ValueError):
+        startup.other_style_path(repo_tmp / "x.mbx")
 
 
 def test_caption_cache_cleared_each_run(repo_tmp):
@@ -579,3 +609,225 @@ def test_summary_counts_exact(repo_tmp, monkeypatch, capsys):
         "Done. 4 office documents indexed: 1 converted, 1 unchanged, "
         "1 failed, 1 deferred for OCR." in out
     )
+
+
+# ---------------------------------------------------------------------------
+# Sidecar-style migration (settings.json: sidecar_dotfiles)
+# ---------------------------------------------------------------------------
+
+
+def set_dotfiles(repo_tmp, value: bool) -> None:
+    (repo_tmp / "settings.json").write_text(
+        json.dumps({"sidecar_dotfiles": value}), encoding="utf-8"
+    )
+
+
+def test_flip_preference_renames_and_stays_certified(repo_tmp, monkeypatch, capsys):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    sidecar_bytes = (repo_tmp / "a.eml.md").read_bytes()
+
+    set_dotfiles(repo_tmp, True)
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 renamed" in out
+    assert "0 converted, 1 unchanged" in out
+    assert calls == []  # renamed, token key rewritten, still certified
+    assert not (repo_tmp / "a.eml.md").exists()
+    assert (repo_tmp / ".a.eml.md").read_bytes() == sidecar_bytes
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {".a.eml.md"}
+
+    # flip back → renamed back
+    set_dotfiles(repo_tmp, False)
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 renamed" in out and "0 converted, 1 unchanged" in out
+    assert (repo_tmp / "a.eml.md").read_bytes() == sidecar_bytes
+    assert not (repo_tmp / ".a.eml.md").exists()
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"a.eml.md"}
+
+
+def test_both_styles_is_conflict_nothing_deleted(repo_tmp, capsys):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    (repo_tmp / ".a.eml.md").write_text("stale dotfile copy", encoding="utf-8")
+    current = (repo_tmp / "a.eml.md").read_bytes()
+
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "both sidecar styles exist for a.eml" in out
+    assert "1 conflict(s)" in out
+    assert (repo_tmp / "a.eml.md").read_bytes() == current
+    assert (repo_tmp / ".a.eml.md").read_text(encoding="utf-8") == "stale dotfile copy"
+
+
+def test_crash_window_repair_rewrites_key_without_reconversion(
+    repo_tmp, monkeypatch, capsys
+):
+    """Sidecar already renamed to the current style but the token row is
+    still keyed under the other style (crash between rename and persist)."""
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    set_dotfiles(repo_tmp, True)
+    # simulate the crash window: file renamed by hand, index untouched
+    (repo_tmp / "a.eml.md").rename(repo_tmp / ".a.eml.md")
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 repaired" in out
+    assert "0 converted, 1 unchanged" in out
+    assert calls == []
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {".a.eml.md"}
+
+
+def test_malformed_repo_settings_aborts_before_touching_anything(repo_tmp, capsys):
+    write_eml(repo_tmp / "a.eml")
+    (repo_tmp / "settings.json").write_text('{"sidecar_dotfiles": "true"}', encoding="utf-8")
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "invalid repo settings" in out
+    assert not (repo_tmp / "a.eml.md").exists()
+    assert not (repo_tmp / ".hash_index.csv").exists()
+
+
+# ---------------------------------------------------------------------------
+# OCR invariant: needs-OCR PDFs never reach the generic converter
+# ---------------------------------------------------------------------------
+
+
+def _ocr_convert_scan(repo_tmp, monkeypatch, capsys):
+    import sys
+
+    make_scanned_pdf(repo_tmp / "scan.pdf", pages=2)
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    monkeypatch.setattr(startup.subprocess, "run", _fake_focr_success)
+    assert run_main() == 0
+    monkeypatch.setattr(sys, "argv", ["startup.py"])
+    capsys.readouterr()
+    return (repo_tmp / "scan.pdf.md").read_bytes()
+
+
+def test_ocr_sidecar_with_lost_rows_is_recertified_not_reconverted(
+    repo_tmp, monkeypatch, capsys
+):
+    sidecar_bytes = _ocr_convert_scan(repo_tmp, monkeypatch, capsys)
+    # drop BOTH the token row and the hash row: uncertified, and the
+    # migration retokenize path (which needs the hash row) can't fire either
+    (repo_tmp / ".token_index.csv").write_text("file,tokens\n", encoding="utf-8")
+    (repo_tmp / ".hash_index.csv").write_text("file,hash\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "0 converted, 1 unchanged, 0 failed, 0 deferred for OCR" in out
+    assert calls == []  # never AnyDoc'd
+    assert (repo_tmp / "scan.pdf.md").read_bytes() == sidecar_bytes  # byte-identical
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"scan.pdf.md"}
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".hash_index.csv")} == {"scan.pdf"}
+    assert read_csv_dict(repo_tmp / ".ocr_index.csv")[0]["ocr_done"] == "true"
+
+
+def test_ocr_sidecar_deleted_token_row_restored_via_migration(
+    repo_tmp, monkeypatch, capsys
+):
+    """Token row alone missing: repaired (re-tokenized), sidecar untouched."""
+    sidecar_bytes = _ocr_convert_scan(repo_tmp, monkeypatch, capsys)
+    (repo_tmp / ".token_index.csv").write_text("file,tokens\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "0 converted, 1 unchanged" in out
+    assert calls == []
+    assert (repo_tmp / "scan.pdf.md").read_bytes() == sidecar_bytes
+    assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"scan.pdf.md"}
+
+
+def test_ocr_flagged_pdf_with_missing_sidecar_is_deferred_never_converted(
+    repo_tmp, monkeypatch, capsys
+):
+    _ocr_convert_scan(repo_tmp, monkeypatch, capsys)
+    (repo_tmp / "scan.pdf.md").unlink()
+
+    calls = []
+    monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 deferred for OCR" in out
+    assert "0 converted" in out
+    assert calls == []
+    assert not (repo_tmp / "scan.pdf.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# persist_indexes skip-write
+# ---------------------------------------------------------------------------
+
+
+def _index_mtimes(repo_tmp):
+    return {
+        name: (repo_tmp / name).stat().st_mtime_ns
+        for name in (".hash_index.csv", ".token_index.csv", ".ocr_index.csv")
+    }
+
+
+def test_unchanged_second_run_rewrites_no_indexes(repo_tmp, capsys):
+    write_eml(repo_tmp / "a.eml")
+    make_digital_pdf(repo_tmp / "doc.pdf")
+    assert run_main() == 0
+    before = _index_mtimes(repo_tmp)
+    time.sleep(0.02)
+    assert run_main() == 0
+    assert _index_mtimes(repo_tmp) == before  # nothing rewritten
+
+
+def test_one_changed_file_rewrites_only_affected_indexes_hash_last(repo_tmp, capsys):
+    write_eml(repo_tmp / "a.eml")
+    make_digital_pdf(repo_tmp / "doc.pdf")
+    assert run_main() == 0
+    before = _index_mtimes(repo_tmp)
+    time.sleep(0.02)
+    write_eml(repo_tmp / "a.eml", subject="changed subject line")
+    assert run_main() == 0
+    after = _index_mtimes(repo_tmp)
+    assert after[".ocr_index.csv"] == before[".ocr_index.csv"]  # untouched
+    assert after[".token_index.csv"] > before[".token_index.csv"]
+    assert after[".hash_index.csv"] > before[".hash_index.csv"]
+    # certification marker still written last
+    assert after[".hash_index.csv"] >= after[".token_index.csv"]
+
+
+# ---------------------------------------------------------------------------
+# .gitignore coverage for every supported suffix (both sidecar styles)
+# ---------------------------------------------------------------------------
+
+
+def test_gitignore_covers_all_source_suffixes():
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    from document_conversion import MBX_SUFFIX, SOURCE_SUFFIXES
+
+    if _shutil.which("git") is None:
+        pytest.skip("git not available")
+    repo_root = Path(__file__).resolve().parent.parent
+    names = [f"x{MBX_SUFFIX}"]
+    for suffix in SOURCE_SUFFIXES:
+        names += [f"x{suffix}", f"x{suffix}.md", f".x{suffix}.md"]
+    proc = _subprocess.run(
+        ["git", "-C", str(repo_root), "check-ignore", "--no-index", "--verbose", *names],
+        capture_output=True,
+        text=True,
+    )
+    ignored = {line.rsplit("\t", 1)[-1] for line in proc.stdout.splitlines()}
+    missing = [name for name in names if name not in ignored]
+    assert not missing, f"not gitignored: {missing}"

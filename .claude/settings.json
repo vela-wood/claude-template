@@ -23,7 +23,6 @@
   },
   "permissions": {
     "allow": [
-      "Bash(uv run markitdown:*)",
       "Bash(uv run startup.py:*)",
       "Bash(caption:*)",
       "Bash(uv run nd.py:*)",

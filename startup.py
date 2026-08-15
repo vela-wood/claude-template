@@ -28,6 +28,7 @@ from typing import Any
 
 import tiktoken
 
+import repo_settings
 from document_conversion import (
     MBX_SUFFIX,
     SOURCE_SUFFIXES,
@@ -43,6 +44,7 @@ from pdfcheck import (
     index_row,
     load_ocr_index,
     save_ocr_index,
+    serialize_ocr_index,
 )
 
 load_repo_dotenv(__file__)
@@ -60,6 +62,10 @@ STATUS_DEFERRED_FOR_OCR = "deferred_for_ocr"
 # Cap applies specifically to active converter calls; hashing and index
 # work use separate default-sized pools.
 CONVERSION_MAX_WORKERS = 4
+
+# Sidecar naming style; main() sets this from the repo settings.json
+# (repo_settings.read_sidecar_dotfiles) before any index load.
+SIDECAR_DOTFILES = False
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")
@@ -100,10 +106,25 @@ def count_tokens(path: Path) -> int:
 
 
 def converted_path(source: Path) -> Path:
-    """Return the expected converted-file path for a source file."""
-    if source.suffix.lower() in SOURCE_SUFFIXES:
+    """Return the expected converted-file path for a source file.
+
+    Style-aware: the only place sidecar names are built. Dotfile style
+    (SIDECAR_DOTFILES) prefixes the sidecar name with a dot.
+    """
+    if source.suffix.lower() not in SOURCE_SUFFIXES:
+        raise ValueError(f"Unsupported source type: {source}")
+    if SIDECAR_DOTFILES:
+        return source.parent / f".{source.name}.md"
+    return source.parent / f"{source.name}.md"
+
+
+def other_style_path(source: Path) -> Path:
+    """The sidecar path in the style NOT currently selected (for migration)."""
+    if source.suffix.lower() not in SOURCE_SUFFIXES:
+        raise ValueError(f"Unsupported source type: {source}")
+    if SIDECAR_DOTFILES:
         return source.parent / f"{source.name}.md"
-    raise ValueError(f"Unsupported source type: {source}")
+    return source.parent / f".{source.name}.md"
 
 
 def _rel(root: Path, path: Path) -> str:
@@ -113,6 +134,24 @@ def _rel(root: Path, path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Index I/O (three typed loaders/serializers; all UTF-8, atomic replacement)
 # ---------------------------------------------------------------------------
+
+
+def serialize_hash_index(index: dict[str, str]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["file", "hash"])
+    for rel_path in sorted(index):
+        writer.writerow([rel_path, index[rel_path]])
+    return buf.getvalue()
+
+
+def serialize_token_index(index: dict[str, int]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["file", "tokens"])
+    for rel_path in sorted(index):
+        writer.writerow([rel_path, index[rel_path]])
+    return buf.getvalue()
 
 
 def load_hash_index(root: Path) -> dict[str, str]:
@@ -129,12 +168,9 @@ def load_hash_index(root: Path) -> dict[str, str]:
 
 def save_hash_index(root: Path, index: dict[str, str]) -> None:
     """Write .hash_index.csv from {source_relative_path: hash}."""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["file", "hash"])
-    for rel_path in sorted(index):
-        writer.writerow([rel_path, index[rel_path]])
-    atomic_write_text(root / HASH_INDEX_FILENAME, buf.getvalue(), newline="")
+    atomic_write_text(
+        root / HASH_INDEX_FILENAME, serialize_hash_index(index), newline=""
+    )
 
 
 def load_token_index(root: Path) -> dict[str, int]:
@@ -158,12 +194,9 @@ def load_token_index(root: Path) -> dict[str, int]:
 
 def save_token_index(root: Path, index: dict[str, int]) -> None:
     """Write .token_index.csv from {sidecar_relative_path: token_count}."""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["file", "tokens"])
-    for rel_path in sorted(index):
-        writer.writerow([rel_path, index[rel_path]])
-    atomic_write_text(root / TOKEN_INDEX_FILENAME, buf.getvalue(), newline="")
+    atomic_write_text(
+        root / TOKEN_INDEX_FILENAME, serialize_token_index(index), newline=""
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +266,85 @@ def hash_sources(
                     )
                 )
     return hashes, failures
+
+
+# ---------------------------------------------------------------------------
+# Sidecar-style migration and repair
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MigrationStats:
+    renamed: int = 0
+    repaired: int = 0
+    retokenized: int = 0
+    conflicts: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.renamed + self.repaired + self.retokenized + self.conflicts
+
+
+def migrate_sidecars(
+    root: Path,
+    sources: list[Path],
+    hashes: dict[str, str],
+    hash_index: dict[str, str],
+    token_index: dict[str, int],
+) -> MigrationStats:
+    """Rename sidecars from the other naming style into the current one and
+    repair index drift, updating token_index keys in place.
+
+    Per discovered source, with cur = converted_path(src) and
+    alt = other_style_path(src):
+
+    1. Both exist → conflict: keep cur, touch nothing, warn naming both
+       paths. Never silently delete user-visible data.
+    2. cur missing, alt exists → os.replace(alt, cur); rewrite the token
+       key. File first, index later: a crash between the two heals on the
+       next run instead of reconverting.
+    3. cur exists, token row still keyed under alt (crash window) →
+       rewrite the key in memory (repair).
+    4. cur exists, no token row under either key, certified hash matches
+       the fresh hash → re-tokenize instead of reconverting. Covers
+       migrated OCR sidecars and index/file drift; for scanned PDFs the
+       only correct recovery.
+
+    Edited sidecars (*_eYYYYMMDD*) are user-created, not index-tracked, and
+    deliberately not migrated.
+    """
+    stats = MigrationStats()
+    for src in sources:
+        rel = _rel(root, src)
+        if rel not in hashes:  # unhashable: leave prior state untouched
+            continue
+        cur, alt = converted_path(src), other_style_path(src)
+        cur_rel, alt_rel = _rel(root, cur), _rel(root, alt)
+        try:
+            if cur.exists() and alt.exists():
+                stats.conflicts += 1
+                print(
+                    f"\tWARNING: both sidecar styles exist for {rel}: "
+                    f"keeping {cur_rel}, ignoring {alt_rel} — delete the stale one."
+                )
+            elif alt.exists():
+                os.replace(alt, cur)
+                if alt_rel in token_index:
+                    token_index[cur_rel] = token_index.pop(alt_rel)
+                stats.renamed += 1
+            elif cur.exists() and cur_rel not in token_index:
+                if alt_rel in token_index:
+                    token_index[cur_rel] = token_index.pop(alt_rel)
+                    stats.repaired += 1
+                elif hash_index.get(rel) == hashes[rel]:
+                    token_index[cur_rel] = count_tokens(cur)
+                    stats.retokenized += 1
+        except Exception as exc:
+            print(
+                f"\tWARNING: sidecar migration failed for {rel}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +729,15 @@ def reconcile_indexes(
         del ocr_index[rel]
 
 
+def _matches_disk(path: Path, text: str) -> bool:
+    """True when path already holds exactly text. Content comparison only,
+    never mtime; any read problem counts as a mismatch (so we write)."""
+    try:
+        return path.read_bytes() == text.encode("utf-8")
+    except OSError:
+        return False
+
+
 def persist_indexes(
     root: Path,
     hash_index: dict[str, str],
@@ -625,20 +746,30 @@ def persist_indexes(
 ) -> list[str]:
     """Atomically write the indexes: token, then OCR, then hash last.
 
-    The hash index is the certification marker and is published only if
-    both preceding writes succeeded: whether a run is interrupted between
-    writes or a token/OCR write fails outright, the old hash index stays in
-    place, so the next run reconverts instead of certifying sidecars whose
-    token/OCR rows are stale. A withheld hash write is itself recorded in
-    the returned errors.
+    A write whose serialized content is byte-identical to the on-disk file
+    is skipped (a skip is a success, not a failure). The hash index is the
+    certification marker and is published only if both preceding writes
+    succeeded: whether a run is interrupted between writes or a token/OCR
+    write fails outright, the old hash index stays in place, so the next
+    run reconverts instead of certifying sidecars whose token/OCR rows are
+    stale. A withheld hash write is itself recorded in the returned errors.
     """
     errors: list[str] = []
-    for name, save in (
-        (TOKEN_INDEX_FILENAME, lambda: save_token_index(root, token_index)),
-        (OCR_INDEX_FILENAME, lambda: save_ocr_index(root, ocr_index)),
+    for name, serialize, save in (
+        (
+            TOKEN_INDEX_FILENAME,
+            lambda: serialize_token_index(token_index),
+            lambda: save_token_index(root, token_index),
+        ),
+        (
+            OCR_INDEX_FILENAME,
+            lambda: serialize_ocr_index(ocr_index),
+            lambda: save_ocr_index(root, ocr_index),
+        ),
     ):
         try:
-            save()
+            if not _matches_disk(root / name, serialize()):
+                save()
         except Exception as exc:
             errors.append(f"writing {name} failed: {type(exc).__name__}: {exc}")
     if errors:
@@ -648,7 +779,10 @@ def persist_indexes(
         )
         return errors
     try:
-        save_hash_index(root, hash_index)
+        if not _matches_disk(
+            root / HASH_INDEX_FILENAME, serialize_hash_index(hash_index)
+        ):
+            save_hash_index(root, hash_index)
     except Exception as exc:
         errors.append(
             f"writing {HASH_INDEX_FILENAME} failed: {type(exc).__name__}: {exc}"
@@ -661,6 +795,7 @@ def summarize(
     token_index: dict[str, int],
     ocr_index: dict[str, dict[str, str]],
     index_errors: list[str],
+    migration: MigrationStats | None = None,
 ) -> int:
     """Print the summary from ProcessingResult statuses; return exit code."""
     counts = {
@@ -687,6 +822,12 @@ def summarize(
         f"PDFs classified: {len(ocr_index)}, of which {needs_ocr} flagged needs_ocr "
         f"({ocr_done} OCR-converted)."
     )
+    if migration is not None and migration.total:
+        print(
+            f"Sidecar naming migration: {migration.renamed} renamed, "
+            f"{migration.repaired} repaired, {migration.retokenized} re-tokenized, "
+            f"{migration.conflicts} conflict(s)."
+        )
     print(f"Total tokens across converted files: {total_tokens:,}")
     print(
         f"Indices written to {HASH_INDEX_FILENAME}, {TOKEN_INDEX_FILENAME}, "
@@ -721,7 +862,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    global SIDECAR_DOTFILES
+
     args = parse_args()
+    # Read the sidecar-naming preference before touching anything: defaulting
+    # on a corrupted settings file in a dotfile-style repo would trigger a
+    # silent mass rename, so fail loudly instead.
+    try:
+        SIDECAR_DOTFILES = repo_settings.read_sidecar_dotfiles()
+    except repo_settings.RepoSettingsError as exc:
+        print(f"ERROR: invalid repo settings: {exc}")
+        print("Fix or delete the repo-root settings.json, then re-run.")
+        return 1
     root = Path.cwd()
     caption_output_dir = root / CAPTION_OUTPUT_DIRNAME
     caption_output_dir.mkdir(parents=True, exist_ok=True)
@@ -756,6 +908,7 @@ def main() -> int:
 
     discovered_rels = {_rel(root, src) for src in sources}
     results: list[ProcessingResult] = []
+    migration = MigrationStats()
 
     if not sources:
         print("\nNo office documents found.")
@@ -766,6 +919,11 @@ def main() -> int:
         results.extend(hash_failures)
         for r in hash_failures:
             print(f"\tERROR hashing {r.source_rel}: {r.detail}")
+
+        # 3b. Migrate/repair sidecar naming before classification so
+        # classify_pdfs/pending_ocr_rels and the certify loop see
+        # post-migration names.
+        migration = migrate_sidecars(root, sources, hashes, hash_index, token_index)
 
         # 4. Classify new/changed PDFs (flags needs_ocr in .ocr_index.csv)
         pdf_rels = sorted(
@@ -799,7 +957,10 @@ def main() -> int:
             results.extend(run_ocr(root, pending_ocr, hashes))
         handled = {r.source_rel for r in results}
 
-        # 5. Certify unchanged sources; convert the rest through the router
+        # 5. Certify unchanged sources; convert the rest through the router.
+        # Invariant: a PDF whose OCR verdict is in NEEDS_OCR_VERDICTS is
+        # NEVER appended to to_convert, so the generic AnyDoc converter can
+        # never overwrite OCR output regardless of index state.
         to_convert: list[Path] = []
         for src in sources:
             rel = _rel(root, src)
@@ -815,8 +976,53 @@ def main() -> int:
                         hashes[rel],
                     )
                 )
-            else:
-                to_convert.append(src)
+                continue
+            row = ocr_index.get(rel)
+            if row is not None and row.get("verdict") in NEEDS_OCR_VERDICTS:
+                sidecar = converted_path(src)
+                sidecar_rel = _rel(root, sidecar)
+                if (
+                    sidecar.exists()
+                    and row.get("ocr_done") == "true"
+                    and row.get("hash") == hashes[rel]
+                ):
+                    # OCR output is current but uncertified (migrated
+                    # sidecar or index drift): re-tokenize + certify;
+                    # ocr_done stays "true", sidecar bytes untouched.
+                    try:
+                        tokens = count_tokens(sidecar)
+                    except Exception as exc:
+                        results.append(
+                            ProcessingResult(
+                                rel,
+                                STATUS_FAILED,
+                                "ocr",
+                                sidecar_rel,
+                                detail=(
+                                    "re-tokenizing OCR sidecar failed: "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                            )
+                        )
+                        continue
+                    hash_index[rel] = hashes[rel]
+                    token_index[sidecar_rel] = tokens
+                    results.append(
+                        ProcessingResult(
+                            rel,
+                            STATUS_UNCHANGED,
+                            "ocr",
+                            sidecar_rel,
+                            hashes[rel],
+                            tokens,
+                        )
+                    )
+                else:
+                    results.append(
+                        ProcessingResult(rel, STATUS_DEFERRED_FOR_OCR, "ocr")
+                    )
+                continue
+            to_convert.append(src)
         results.extend(convert_sources(root, to_convert, hashes))
 
         # 6. Stage successful results into the indexes
@@ -828,7 +1034,7 @@ def main() -> int:
     index_errors = persist_indexes(root, hash_index, token_index, ocr_index)
 
     # 8. Summary and exit status from ProcessingResult statuses
-    return summarize(results, token_index, ocr_index, index_errors)
+    return summarize(results, token_index, ocr_index, index_errors, migration)
 
 
 if __name__ == "__main__":

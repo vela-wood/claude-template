@@ -27,6 +27,10 @@ and review their output.
 - Operate ONLY on converted markdown: `foo.docx.md` / `foo.pdf.md` (from
   `uv run startup.py`) or an `adeu extract` markdown of the docx. NEVER open a
   .docx directly without first asking the user.
+- Sidecars may be **dot-prefixed** (`.foo.docx.md`) when the repo-root
+  `settings.json` sets `sidecar_dotfiles: true`. Dotfiles don't match plain
+  globs, so use explicit `.`-prefixed patterns alongside the plain ones:
+  `ls *_e2026* .*_e2026*`; Phase-1 inputs `*.docx.md .*.docx.md`.
 - Prefer the newest edited markdown (`*_eYYYYMMDD*`) when one exists.
 - Run all scripts with `uv run` from the repo root.
 
@@ -46,7 +50,12 @@ uv run $SKILL/sig_extract.py FILE1.md FILE2.md ... --outdir OUT
 - Finds the signature region (markers: "[Signature Page(s) Follow]",
   "IN WITNESS WHEREOF", "The parties/undersigned have executed this ...") and
   cuts it off at the first EXHIBIT/SCHEDULE/ANNEX/APPENDIX heading, writing
-  `<name>_sigs.md` per input (strips the trailing `.md` first).
+  `<name>_sigs.md` per input (strips the trailing `.md`, then any leading
+  dots, so outputs are always visible and `OUT/*_sigs.md` keeps working).
+- If two inputs map to the same output after dot-stripping (e.g.
+  `contract.docx.md` and `.contract.docx.md`), the script prints the
+  colliding pair, exits nonzero, and writes nothing — rename or split the
+  run.
 - If a file WARNs "no signature-block marker found": read the file's tail
   yourself, find the 1-based line where the signature pages start, and re-run
   that one file with `--start-line N`. Do not skip the file silently. If the

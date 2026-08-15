@@ -64,19 +64,27 @@ If your terminal says `caption` can't be found afterward, run this once and reop
 uv tool update-shell
 ```
 
-**4. (Optional) Connect Caption and NetDocs credentials:**
+**4. Run the setup hub:**
 
 ```sh
 uv run setup_claude.py
 ```
 
-This opens the Caption sign-in flow, saves the selected organization's credentials into a local `.env` file, and skips anything already saved. It does not install software.
+This opens a small interactive setup screen (a "hub") listing three independent tasks, each showing its current state. Run one at a time, or pick **Run everything**:
+
+1. **Caption credentials** — the Caption sign-in flow; saves the selected organization's credentials into a local `.env` file and skips anything already saved.
+2. **Sidecar naming** — choose how converted Markdown files are named: visible `contract.docx.md` (the default) or dot-prefixed `.contract.docx.md` (hidden in Finder and plain `ls`). After changing this, the next `uv run startup.py` renames existing converted files to the chosen style automatically. If both styles of the same file somehow exist, startup keeps the one matching your setting and warns you to delete the other — it never deletes either file itself.
+3. **Statusline + usage cache** — writes the status-bar command into `.claude/settings.local.json` (local to your machine, not shared). The command also keeps a small usage cache up to date so the optional usage guard can read your Claude usage. Two variants: the default needs nothing extra installed (a plain built-in renderer); if you have Node and want the fancier `ccstatusline` renderer, the setup screen offers a one-time pinned install into `.statusline/` — the statusline never re-downloads software on refresh.
+
+The hub also shows a notice at the top when the repo itself has updates available (it never updates automatically).
 
 **5. (Optional) Check that your Caption credentials work:**
 
 ```sh
 uv run setup_test.py
 ```
+
+**Updating:** from time to time, `git pull` and re-run `uv run setup_claude.py` — the hub shows what is already configured and only changes what you pick.
 
 You're done. Skip ahead to [Everyday use](#everyday-use).
 
@@ -130,7 +138,7 @@ uv run startup.py
 
 `startup.py` prepares your files. It:
 
-- converts `.pdf`, `.docx`, and supported email files into matching `.md` (Markdown) files next to them — for example, `contract.pdf` becomes `contract.pdf.md`;
+- converts `.pdf`, `.docx`, and supported email files into matching `.md` (Markdown) files next to them — for example, `contract.pdf` becomes `contract.pdf.md` (or `.contract.pdf.md` if you chose the dot-prefixed style in setup; startup migrates existing files between styles automatically and warns — without deleting anything — if both styles of the same file exist);
 - keeps `.hash_index.csv` so it knows which source files have changed;
 - keeps `.token_index.csv` with the size (token count) of each converted file;
 - creates and clears the `caption_cache/` folder for Caption output;

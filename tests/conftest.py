@@ -331,7 +331,17 @@ def make_malformed_pdf(path: Path) -> Path:
 
 @pytest.fixture
 def repo_tmp(tmp_path, monkeypatch):
-    """A temporary working folder that startup.main() treats as the repo root."""
+    """A temporary working folder that startup.main() treats as the repo root.
+
+    Hermetic: the repo-settings seam points at a tmp file so tests never read
+    (or depend on) the real repo-root settings.json, and the sidecar-style
+    global is restored after each test.
+    """
+    import repo_settings
+    import startup
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["startup.py"])
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
     return tmp_path

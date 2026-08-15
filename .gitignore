@@ -15,6 +15,7 @@ USERPREFS.md
 .env
 *.cfg
 adeu/
+/.statusline/
 
 # Matter documents and converted markdown sidecars.
 *.docx
@@ -29,7 +30,6 @@ adeu/
 *.ppt.md
 *.pdf
 *.pdf.md
-*.pdf.ocr.md
 *.rtf
 *.rtf.md
 *.odt
@@ -37,8 +37,19 @@ adeu/
 *.csv
 *.eml
 *.eml.md
+*.emlx
+*.emlx.md
 *.msg
 *.msg.md
+*.oft
+*.oft.md
+*.mht
+*.mht.md
+*.mhtml
+*.mhtml.md
+*.mbox
+*.mbox.md
+*.mbx
 *.doc
 *.doc.md
 .osgrep
