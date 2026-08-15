@@ -1,7 +1,8 @@
 """Statusline task: install the statusline (ccstatus.py, which renders
 the bar and caches the usage payload) into the user's ~/.claude. Nothing
 statusline-related is written inside the repo's .claude/. Pure helpers; no
-TUI here.
+TUI here. (Repo-local usage-guard hooks live in config/guard.py — they are
+the one piece that IS written inside the repo's .claude/.)
 """
 from __future__ import annotations
 
@@ -24,14 +25,37 @@ def _is_venv_path_entry(entry: str, virtual_env: str | None) -> bool:
     return ".venv" in Path(entry).parts
 
 
-def detect_python3() -> str:
-    """A python3 that outlives this venv, for the statusline command.
+def validate_python(python3: str, *, timeout: float = 8.0) -> bool:
+    """True when `python3` is a runnable Python interpreter. Actually
+    executes it (`-c`, not `--version`: the Windows Store python.exe stub
+    exits nonzero without executing code, so `-c` rejects it)."""
+    if not python3:
+        return False
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        # No console window flash under the TUI.
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(
+            [python3, "-c", "import sys; sys.exit(0)"],
+            capture_output=True,
+            timeout=timeout,
+            **kwargs,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def detect_python3() -> str | None:
+    """A python3 that outlives this venv, validated to actually run, or
+    None when nothing runnable is found (caller must ask the user).
 
     Under `uv run`, both sys.executable and a naive which() resolve into
     .venv/bin — a venv that may not exist tomorrow — so PATH entries under
     $VIRTUAL_ENV (and any .venv path segment) are filtered out first.
-    Fallback: /usr/bin/python3 on POSIX; on Windows whatever filtered
-    which() finds (python, then the py launcher).
+    Every candidate is checked with validate_python before being returned,
+    so a dead command is never handed to the installer.
     """
     virtual_env = os.environ.get("VIRTUAL_ENV")
     entries = [
@@ -40,13 +64,25 @@ def detect_python3() -> str:
         if entry and not _is_venv_path_entry(entry, virtual_env)
     ]
     filtered_path = os.pathsep.join(entries)
+    candidates: list[str] = []
     if sys.platform == "win32":
         for name in ("python", "python3", "py"):
             found = shutil.which(name, path=filtered_path)
             if found:
-                return found
-        return "python"
-    return shutil.which("python3", path=filtered_path) or "/usr/bin/python3"
+                candidates.append(found)
+        # uv-managed base interpreter: outlives the venv it spawned.
+        candidates.append(str(Path(sys.base_prefix) / "python.exe"))
+    else:
+        found = shutil.which("python3", path=filtered_path)
+        if found:
+            candidates.append(found)
+        candidates.append("/usr/bin/python3")
+        candidates.append(str(Path(sys.base_prefix) / "bin" / "python3"))
+    for candidate in candidates:
+        # Module-attribute call so tests can monkeypatch validate_python.
+        if validate_python(candidate):
+            return candidate
+    return None
 
 
 def _quote_for_platform(arg: str, platform: str) -> str:

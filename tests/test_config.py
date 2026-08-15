@@ -3,6 +3,7 @@
 import asyncio
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,11 @@ from config import app as config_app
 from config import statusline as config_statusline
 from config.app import count_commits_behind, hub_status, upstream_ref
 from config.common import SetupError
+from config.guard import (
+    build_guard_hook_commands,
+    guard_hooks_present,
+    merge_guard_hooks,
+)
 from config.env import (
     BuildResult,
     WriteResult,
@@ -30,6 +36,7 @@ from config.statusline import (
     statusline_settings,
     script_source,
     uses_installed_script,
+    validate_python,
     _quote_for_platform,
 )
 
@@ -82,6 +89,7 @@ def test_quote_for_platform():
 
 def test_detect_python3_filters_venv_entries(monkeypatch):
     monkeypatch.setattr(config_statusline.sys, "platform", "linux")
+    monkeypatch.setattr(config_statusline, "validate_python", lambda *a, **k: True)
     venv = "/repo/.venv"
     monkeypatch.setenv("VIRTUAL_ENV", venv)
     monkeypatch.setenv(
@@ -104,8 +112,60 @@ def test_detect_python3_filters_venv_entries(monkeypatch):
 
 def test_detect_python3_posix_fallback(monkeypatch):
     monkeypatch.setattr(config_statusline.sys, "platform", "linux")
+    monkeypatch.setattr(config_statusline, "validate_python", lambda *a, **k: True)
     monkeypatch.setattr(config_statusline.shutil, "which", lambda *a, **k: None)
     assert detect_python3() == "/usr/bin/python3"
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_detect_python3_none_when_nothing_validates(monkeypatch, platform):
+    monkeypatch.setattr(config_statusline.sys, "platform", platform)
+    monkeypatch.setattr(config_statusline, "validate_python", lambda *a, **k: False)
+    monkeypatch.setattr(
+        config_statusline.shutil, "which", lambda *a, **k: "/somewhere/python"
+    )
+    assert detect_python3() is None
+
+
+def test_detect_python3_win32_skips_failing_candidate(monkeypatch):
+    """The Windows Store python.exe stub fails validation → next candidate."""
+    monkeypatch.setattr(config_statusline.sys, "platform", "win32")
+    found = {
+        "python": r"C:\Store\python.exe",
+        "python3": r"C:\Real\python3.exe",
+        "py": None,
+    }
+    monkeypatch.setattr(
+        config_statusline.shutil, "which", lambda name, path=None: found[name]
+    )
+    monkeypatch.setattr(
+        config_statusline,
+        "validate_python",
+        lambda c, **k: c == r"C:\Real\python3.exe",
+    )
+    assert detect_python3() == r"C:\Real\python3.exe"
+
+
+def test_detect_python3_win32_base_prefix_wins_on_empty_path(monkeypatch):
+    monkeypatch.setattr(config_statusline.sys, "platform", "win32")
+    monkeypatch.setattr(config_statusline.sys, "base_prefix", r"C:\uv\cpython")
+    monkeypatch.setattr(config_statusline.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(config_statusline, "validate_python", lambda *a, **k: True)
+    assert detect_python3() == str(Path(r"C:\uv\cpython") / "python.exe")
+
+
+def test_validate_python_smoke(tmp_path):
+    assert validate_python(sys.executable) is True
+    assert validate_python(str(tmp_path / "does-not-exist")) is False
+    assert validate_python("") is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell script")
+def test_validate_python_rejects_nonzero_exit(tmp_path):
+    bad = tmp_path / "bad-python"
+    bad.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    bad.chmod(0o755)
+    assert validate_python(str(bad)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +389,181 @@ def test_remove_local_statusline_never_clobbers_malformed(tmp_path, content):
 
 
 # ---------------------------------------------------------------------------
+# Guard hooks (config/guard.py)
+# ---------------------------------------------------------------------------
+
+
+def test_build_guard_commands_posix():
+    cmds = build_guard_hook_commands("/usr/bin/python3", Path("/repo"), platform="linux")
+    assert cmds["PreToolUse"] == (
+        "[ ! -d /repo/.ccguard ] || /usr/bin/python3 /repo/usage_guard.py --hook-json"
+    )
+    assert cmds["SessionStart"] == "/usr/bin/python3 /repo/usage_guard.py --session-start"
+
+
+def test_build_guard_commands_posix_quotes_spaces():
+    cmds = build_guard_hook_commands(
+        "/usr/bin/python3", Path("/my repo"), platform="linux"
+    )
+    assert cmds["PreToolUse"] == (
+        "[ ! -d '/my repo/.ccguard' ] || /usr/bin/python3 "
+        "'/my repo/usage_guard.py' --hook-json"
+    )
+    assert cmds["SessionStart"] == (
+        "/usr/bin/python3 '/my repo/usage_guard.py' --session-start"
+    )
+
+
+def test_build_guard_commands_win32():
+    repo = Path(r"C:\repo")
+    cmds = build_guard_hook_commands(r"C:\Python\python.exe", repo, platform="win32")
+    ccguard = str(repo / ".ccguard")
+    script = str(repo / "usage_guard.py")
+    assert cmds["PreToolUse"] == (
+        f'if exist "{ccguard}\\" C:\\Python\\python.exe {script} --hook-json'
+    )
+    assert cmds["SessionStart"] == f"C:\\Python\\python.exe {script} --session-start"
+
+
+def test_build_guard_commands_win32_spaces_and_trailing_backslash():
+    repo = Path(r"C:\my repo")
+    cmds = build_guard_hook_commands(
+        r"C:\Program Files\Python\python.exe", repo, platform="win32"
+    )
+    ccguard = str(repo / ".ccguard")
+    pre = cmds["PreToolUse"]
+    # single trailing backslash inside the quotes (directory test); never doubled
+    assert f'if exist "{ccguard}\\" ' in pre
+    assert ccguard + '\\\\"' not in pre
+    assert '"C:\\Program Files\\Python\\python.exe"' in pre
+    assert '"C:\\Program Files\\Python\\python.exe"' in cmds["SessionStart"]
+
+
+def test_merge_guard_hooks_creates_file_and_is_idempotent(tmp_path):
+    path = tmp_path / ".claude" / "settings.local.json"
+    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo"), platform="linux") is True
+    before = path.read_text(encoding="utf-8")
+    data = json.loads(before)
+    assert [e["matcher"] for e in data["hooks"]["PreToolUse"]] == ["*"]
+    assert [e["matcher"] for e in data["hooks"]["SessionStart"]] == ["startup|clear"]
+    # second run: identical → no write
+    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo"), platform="linux") is False
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_merge_guard_hooks_replaces_handwritten_entries(tmp_path):
+    """Seeded with the real hand-written settings.local.json shape: old
+    /usr/bin/python3 hooks are replaced (no duplication), everything else
+    stays byte-identical."""
+    path = tmp_path / "settings.local.json"
+    seeded = {
+        "permissions": {"allow": ["Bash(uv run:*)", "Bash(git reset:*)"]},
+        "prefersReducedMotion": False,
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": (
+                                "[ ! -d /old/.ccguard ] || /usr/bin/python3 "
+                                "/old/usage_guard.py --hook-json"
+                            ),
+                        }
+                    ],
+                }
+            ],
+            "SessionStart": [
+                {
+                    "matcher": "startup|clear",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/usr/bin/python3 /old/usage_guard.py --session-start",
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+    path.write_text(json.dumps(seeded), encoding="utf-8")
+    assert merge_guard_hooks(path, "/new/python3", Path("/repo"), platform="linux") is True
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["permissions"] == seeded["permissions"]
+    assert data["prefersReducedMotion"] is False
+    for event in ("PreToolUse", "SessionStart"):
+        entries = data["hooks"][event]
+        assert len(entries) == 1
+        commands = [h["command"] for h in entries[0]["hooks"]]
+        assert len(commands) == 1
+        assert "/new/python3" in commands[0]
+        assert "/old/" not in commands[0]
+
+
+def test_merge_guard_hooks_preserves_foreign_hooks_and_events(tmp_path):
+    path = tmp_path / "settings.local.json"
+    foreign = {"type": "command", "command": "echo hi"}
+    ours_old = {
+        "type": "command",
+        "command": "/usr/bin/python3 /x/usage_guard.py --hook-json",
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [{"matcher": "*", "hooks": [foreign, ours_old]}],
+                    "Stop": [{"matcher": "", "hooks": [foreign]}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert merge_guard_hooks(path, "/p", Path("/repo"), platform="linux") is True
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["hooks"]["Stop"] == [{"matcher": "", "hooks": [foreign]}]
+    pre = data["hooks"]["PreToolUse"]
+    assert pre[0] == {"matcher": "*", "hooks": [foreign]}  # foreign survives
+    assert len(pre) == 2
+    assert "usage_guard.py" in pre[1]["hooks"][0]["command"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{broken", "[1]", '{"hooks": "nope"}', '{"hooks": {"PreToolUse": {}}}'],
+)
+def test_merge_guard_hooks_never_clobbers_malformed(tmp_path, content):
+    path = tmp_path / "settings.local.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(SetupError):
+        merge_guard_hooks(path, "/p", Path("/repo"), platform="linux")
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_guard_hooks_present_truth_table(tmp_path):
+    path = tmp_path / "settings.local.json"
+    assert guard_hooks_present(path) is False  # missing file
+    path.write_text("{broken", encoding="utf-8")
+    assert guard_hooks_present(path) is False  # malformed
+    path.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
+    assert guard_hooks_present(path) is False  # no events
+    only_pre = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [{"type": "command", "command": "p usage_guard.py --hook-json"}],
+                }
+            ]
+        }
+    }
+    path.write_text(json.dumps(only_pre), encoding="utf-8")
+    assert guard_hooks_present(path) is False  # one event is not enough
+    merge_guard_hooks(path, "/p", Path("/repo"), platform="linux")
+    assert guard_hooks_present(path) is True
+
+
+# ---------------------------------------------------------------------------
 # Update check (subprocess monkeypatched)
 # ---------------------------------------------------------------------------
 
@@ -440,11 +675,17 @@ def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
     user_dir = _isolate_user_claude(monkeypatch, tmp_path)
     # nothing installed → not set up
     assert hub_status(repo)["statusline"] == "not set up yet"
-    # installed and wired → ready
+    # installed and wired, but guard hooks not yet written → flagged
     install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
-    assert (
-        hub_status(repo)["statusline"]
-        == "ready — installed account-wide, works in every folder"
+    assert hub_status(repo)["statusline"] == (
+        "needs attention — the usage guard isn't hooked up in this "
+        "folder (open this item to fix)"
+    )
+    # guard hooks installed too → ready
+    local = repo / ".claude" / "settings.local.json"
+    merge_guard_hooks(local, "/usr/bin/python3", repo, platform="linux")
+    assert hub_status(repo)["statusline"] == (
+        "ready — status bar and usage guard installed, works in every folder"
     )
     # repo script updated → prompt to reinstall
     script_source(repo).write_text("# statusline v2\n", encoding="utf-8")
@@ -453,7 +694,6 @@ def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
         == "needs attention — an updated status bar is ready to install"
     )
     # a repo-local statusLine shadows the account-wide one → flagged first
-    local = repo / ".claude" / "settings.local.json"
     merge_statusline_settings(local, "anything")
     assert hub_status(repo)["statusline"] == (
         "needs attention — this folder overrides your account-wide "

@@ -3,10 +3,13 @@
 
 Reads ONLY ~/legal/ccstatus.json — the verbatim statusline payload cached by
 ~/.claude/hooks/ccstatus.py, which `uv run config.py` installs from this
-repo's ccstatus.py (freshness = file mtime). No network, no OAuth, no
-Keychain; stdlib only, so the hook hot path never needs `uv run`. Until that
-install happens the cache never refreshes and every hook mode silently does
-nothing (fails open) — the only visible complaint is in the manual mode.
+repo's ccstatus.py (freshness = file mtime). The same setup also installs
+this script's hooks into the repo's .claude/settings.local.json. No network,
+no OAuth, no Keychain; stdlib only, so the hook hot path never needs
+`uv run`. Until that install happens the cache never refreshes and every
+hook mode silently does nothing (fails open) — the only visible complaint
+is in the manual mode. The arm command offered at session start is built
+from sys.executable (the interpreter the installed hook launched).
 
 At session start, if any usage window is >90%, a SessionStart hook injects
 additionalContext asking Claude to offer a one-session stop-at-99% guard.
@@ -152,6 +155,16 @@ def remove_dir_if_empty():
         pass
 
 
+def _quote_arg(arg, platform=sys.platform):
+    """Minimal platform quoting for the arm command shown to Claude."""
+    arg = str(arg)
+    if platform == "win32":
+        return f'"{arg}"' if any(ch.isspace() for ch in arg) else arg
+    import shlex  # lazy: the --hook-json fast path never pays this import
+
+    return shlex.quote(arg)
+
+
 def read_session_id_from_stdin():
     try:
         return str(json.loads(sys.stdin.read()).get("session_id") or "")
@@ -179,7 +192,12 @@ def mode_session_start(args):
     local_reset = local_reset_str(binding["reset"])
     if local_reset:
         reset_note = f"; resets {local_reset}"
-    arm_cmd = f"/usr/bin/python3 {SCRIPT_PATH} --arm {session_id}"
+    # sys.executable is exactly the interpreter the installed SessionStart
+    # hook launched, so the arm command reuses it on both platforms.
+    python = sys.executable or ("python" if sys.platform == "win32" else "python3")
+    arm_cmd = (
+        f"{_quote_arg(python)} {_quote_arg(SCRIPT_PATH)} --arm {_quote_arg(session_id)}"
+    )
     context = (
         f"Claude usage is at {binding['percent']:.0f}% of the "
         f"{binding['label']} window{reset_note}. On the first turn, ask the "

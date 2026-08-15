@@ -6,6 +6,8 @@ from pathlib import Path
 # This file lives in <repo>/config/, one level below the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = REPO_ROOT / ".env"
+# Repo-local, gitignored settings: the usage-guard hooks (config/guard.py)
+# are installed here, per-machine.
 LOCAL_SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.local.json"
 # User-level Claude Code directory. The statusline installs there
 # (hooks/ccstatus.py + a statusLine in settings.json), refreshing the

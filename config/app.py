@@ -8,7 +8,9 @@ run it) with three independent tasks:
    and ~/.claude/settings.json points its statusLine at it. Nothing
    statusline-related is written inside the repo's .claude/; a leftover
    repo-local statusLine (which would shadow the account-wide one) is
-   removed on install.
+   removed on install. The same task installs the usage-guard hooks
+   (config/guard.py) into the repo's .claude/settings.local.json
+   (LOCAL_SETTINGS_PATH — gitignored, per-machine).
 
 Run with `uv run config.py` (a thin launcher for this module).
 TUI-only; no plain fallback.
@@ -42,6 +44,7 @@ from .env import (
     summarize_env_write,
     write_env_file,
 )
+from .guard import guard_hooks_present, merge_guard_hooks
 from .statusline import (
     build_statusline_command,
     detect_python3,
@@ -51,6 +54,7 @@ from .statusline import (
     remove_local_statusline,
     statusline_settings,
     uses_installed_script,
+    validate_python,
 )
 
 TASK_ORDER = ("env", "sidecar", "statusline")
@@ -175,8 +179,18 @@ def hub_status(repo_root: Path) -> dict[str, str]:
             rows["statusline"] = (
                 "needs attention — an updated status bar is ready to install"
             )
+        elif not guard_hooks_present(
+            Path(repo_root) / ".claude" / "settings.local.json"
+        ):
+            rows["statusline"] = (
+                "needs attention — the usage guard isn't hooked up in this "
+                "folder (open this item to fix)"
+            )
         else:
-            rows["statusline"] = "ready — installed account-wide, works in every folder"
+            rows["statusline"] = (
+                "ready — status bar and usage guard installed, works in "
+                "every folder"
+            )
     except Exception as exc:
         rows["statusline"] = f"couldn't check this item ({exc})"
     return rows
@@ -477,22 +491,30 @@ class SidecarScreen(TaskScreen["bool | None"]):
 
 
 class StatusLineScreen(TaskScreen["str | None"]):
-    """Python-path input + live command preview. Result: the python3 path
-    to install with, or None on cancel."""
+    """Python-path input + live command preview. Result: the (validated)
+    python3 path to install with, or None on cancel. python3=None means
+    detection found nothing runnable — the user must type a path."""
 
     CSS = """
     #box { width: 100; }
     #preview { color: $success; margin: 0 0 1 0; }
     #note { color: $text-muted; margin-bottom: 1; }
+    #warning { color: $warning; margin-bottom: 1; }
+    #loading { height: 1; }
     """
 
-    def __init__(self, python3: str, *, update: bool = False) -> None:
+    def __init__(self, python3: str | None, *, update: bool = False) -> None:
         super().__init__()
-        self._python3 = python3
+        self._python3 = python3 or ""
         self._update = update
 
     def _python_value(self) -> str:
         return self.query_one("#python", Input).value.strip() or self._python3
+
+    def _preview_text(self, python3: str) -> str:
+        if not python3:
+            return "(waiting for a Python path above)"
+        return build_statusline_command(python3, installed_script(USER_CLAUDE_DIR))
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -503,23 +525,33 @@ class StatusLineScreen(TaskScreen["str | None"]):
                 "installs into your home folder (~/.claude), so it works "
                 "in every folder, not just this one."
             )
+            warning = Static(
+                "Couldn't find Python automatically — type its full path "
+                "below (for example C:\\Python312\\python.exe).",
+                id="warning",
+            )
+            warning.display = not self._python3
+            yield warning
             yield Static(
                 "Where Python lives on this computer (pre-filled "
                 "automatically — leave as is unless you know it's wrong):"
             )
-            yield Input(value=self._python3, id="python")
+            yield Input(
+                value=self._python3,
+                placeholder="Full path to Python (e.g. /usr/bin/python3)",
+                id="python",
+            )
             yield Static("Behind the scenes, this command runs the status bar:")
             # _python_value() queries #python, which is not mounted during
             # compose — build the initial preview from the same default.
-            yield Static(
-                build_statusline_command(
-                    self._python3, installed_script(USER_CLAUDE_DIR)
-                ),
-                id="preview",
-            )
+            yield Static(self._preview_text(self._python3), id="preview")
             yield Static(
                 "Nothing extra to install — no internet needed.", id="note"
             )
+            loading = LoadingIndicator(id="loading")
+            loading.display = False
+            yield loading
+            yield Static("", id="error")
             with Horizontal():
                 yield Button(
                     "Install update" if self._update else "Install status bar",
@@ -529,17 +561,43 @@ class StatusLineScreen(TaskScreen["str | None"]):
                 yield Button("Cancel", id="cancel")
         yield Footer()
 
+    def _set_busy(self, busy: bool) -> None:
+        self.query_one("#loading", LoadingIndicator).display = busy
+        self.query_one("#apply", Button).disabled = busy
+
+    def _show_error(self, message: str) -> None:
+        self.query_one("#error", Static).update(message)
+
     @on(Input.Changed, "#python")
     def _refresh_preview(self) -> None:
         self.query_one("#preview", Static).update(
-            build_statusline_command(
-                self._python_value(), installed_script(USER_CLAUDE_DIR)
-            )
+            self._preview_text(self._python_value())
         )
+
+    @work(exclusive=True)
+    async def _validate_and_finish(self, candidate: str) -> None:
+        ok = await asyncio.to_thread(validate_python, candidate)
+        if not self.is_attached:
+            return
+        self._set_busy(False)
+        if not ok:
+            self._show_error(
+                f"That Python didn't run ({candidate}). Check the path and "
+                "try again — nothing was installed."
+            )
+            return
+        if not self._finished:
+            self.finish(candidate)
 
     @on(Button.Pressed, "#apply")
     def _apply(self) -> None:
-        self.finish(self._python_value())
+        candidate = self._python_value()
+        if not candidate:
+            self._show_error("Please type the full path to Python first.")
+            return
+        self._show_error("")
+        self._set_busy(True)
+        self._validate_and_finish(candidate)
 
 
 class SetupApp(App[int]):
@@ -658,21 +716,27 @@ class SetupApp(App[int]):
             statusline_settings(USER_SETTINGS_PATH), USER_CLAUDE_DIR
         )
         local_override = statusline_settings(LOCAL_SETTINGS_PATH) is not None
-        if state == "current" and wired and not local_override:
+        guard_ok = guard_hooks_present(LOCAL_SETTINGS_PATH)
+        if state == "current" and wired and not local_override and guard_ok:
             self.notify(
-                "Your status bar is already installed account-wide — it "
-                "works in every folder. Nothing to change here."
+                "Your status bar and usage guard are already installed — "
+                "they work in every folder. Nothing to change here."
             )
             return
+        detected = await asyncio.to_thread(detect_python3)
         python3 = await self.push_screen_wait(
-            StatusLineScreen(detect_python3(), update=state == "outdated")
+            StatusLineScreen(detected, update=state == "outdated")
         )
         if python3 is None:
             return
         install_user_statusline(REPO_ROOT, USER_CLAUDE_DIR, python3)
+        # Before remove_local_statusline: a malformed settings.local.json
+        # raises SetupError here and aborts before any local rewrite.
+        merge_guard_hooks(LOCAL_SETTINGS_PATH, python3, REPO_ROOT)
         removed = remove_local_statusline(LOCAL_SETTINGS_PATH)
         message = (
-            "Status bar installed account-wide — it now works in every folder."
+            "Status bar installed account-wide, and the usage guard is "
+            "hooked up in this folder."
         )
         if removed:
             message += " (This folder's old override was removed.)"
