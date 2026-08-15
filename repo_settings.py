@@ -2,9 +2,9 @@
 
 This is the *repo* settings file (user-local preferences like sidecar
 naming), distinct from Claude Code's .claude/settings.json. It lives here —
-not in setup_claude.py — because startup.py must read preferences without
+not in config.py — because startup.py must read preferences without
 importing textual. SETTINGS_PATH is the only definition of where repo
-settings live; startup.py and setup_claude.py import it and nothing else
+settings live; startup.py and config.py import it and nothing else
 re-derives it. Tests monkeypatch repo_settings.SETTINGS_PATH to a tmp file
 (all helpers resolve it at call time, never at import time).
 

@@ -96,9 +96,9 @@ Token counts of converted files are maintained in `.token_index.csv` at the repo
 
 - ONLY use the /redline skill to edit word documents. Do not use any other method.
 
-### 4.7 setup_claude.py is human-only
+### 4.7 config.py is human-only
 
-NEVER run `uv run setup_claude.py`. It opens an interactive Textual TUI
+NEVER run `uv run config.py`. It opens an interactive Textual TUI
 intended for humans (same rule as bare `nd.py`). If setup looks needed,
 tell the user to run it themselves.
 

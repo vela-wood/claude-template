@@ -2,7 +2,7 @@
 """Statusline tee: cache rate-limit payloads, then echo or render.
 
 The statusLine command lives in the gitignored .claude/settings.local.json,
-written by `uv run setup_claude.py`. Two modes:
+written by `uv run config.py`. Two modes:
 
 - Pipe mode (default): echo the raw stdin bytes to stdout before anything
   else, so a cache bug can never blank or mangle a downstream renderer

@@ -1,4 +1,4 @@
-"""Pure-helper tests for setup_claude.py (no TUI, no network)."""
+"""Pure-helper tests for the setup package (config/) (no TUI, no network)."""
 
 import asyncio
 import json
@@ -8,22 +8,25 @@ from pathlib import Path
 import pytest
 
 import repo_settings
-import setup_claude
-from setup_claude import (
+from config import app as config_app
+from config import statusline as config_statusline
+from config.app import count_commits_behind, hub_status, upstream_ref
+from config.common import SetupError
+from config.env import (
     BuildResult,
-    SetupError,
     WriteResult,
-    build_statusline_command,
-    count_commits_behind,
-    detect_python3,
-    detect_renderer,
-    hub_status,
-    merge_local_settings,
     organization_choices,
     select_organization,
-    statusline_settings,
     summarize_env_write,
-    upstream_ref,
+)
+from config.statusline import (
+    build_statusline_command,
+    detect_python3,
+    detect_renderer,
+    merge_local_settings,
+    remove_local_statusline,
+    statusline_settings,
+    uses_repo_tee,
     _quote_for_platform,
 )
 
@@ -76,7 +79,7 @@ def test_quote_for_platform():
 
 
 def test_detect_python3_filters_venv_entries(monkeypatch):
-    monkeypatch.setattr(setup_claude.sys, "platform", "linux")
+    monkeypatch.setattr(config_statusline.sys, "platform", "linux")
     venv = "/repo/.venv"
     monkeypatch.setenv("VIRTUAL_ENV", venv)
     monkeypatch.setenv(
@@ -90,7 +93,7 @@ def test_detect_python3_filters_venv_entries(monkeypatch):
         seen["path"] = path
         return "/usr/local/bin/python3"
 
-    monkeypatch.setattr(setup_claude.shutil, "which", fake_which)
+    monkeypatch.setattr(config_statusline.shutil, "which", fake_which)
     assert detect_python3() == "/usr/local/bin/python3"
     assert seen["name"] == "python3"
     assert ".venv" not in seen["path"]
@@ -98,8 +101,8 @@ def test_detect_python3_filters_venv_entries(monkeypatch):
 
 
 def test_detect_python3_posix_fallback(monkeypatch):
-    monkeypatch.setattr(setup_claude.sys, "platform", "linux")
-    monkeypatch.setattr(setup_claude.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(config_statusline.sys, "platform", "linux")
+    monkeypatch.setattr(config_statusline.shutil, "which", lambda *a, **k: None)
     assert detect_python3() == "/usr/bin/python3"
 
 
@@ -213,6 +216,56 @@ def test_merge_local_settings_never_clobbers_malformed(tmp_path, content):
 
 
 # ---------------------------------------------------------------------------
+# uses_repo_tee / remove_local_statusline (global statusline layout)
+# ---------------------------------------------------------------------------
+
+
+def test_uses_repo_tee(tmp_path):
+    tee = tmp_path / ".claude" / "hooks" / "ccstatus-tee.py"
+    assert uses_repo_tee(f"/usr/bin/python3 {tee} | npx -y ccstatusline@latest", tmp_path)
+    assert uses_repo_tee(f"/usr/bin/python3 {tee} --render", tmp_path)
+    # shlex-quoted paths keep the raw path as a substring
+    assert uses_repo_tee(f"/usr/bin/python3 '{tee}' | 'my renderer'", tmp_path)
+    assert not uses_repo_tee("npx -y ccstatusline@latest", tmp_path)
+    assert not uses_repo_tee(
+        "/usr/bin/python3 /other/repo/.claude/hooks/ccstatus-tee.py --render", tmp_path
+    )
+    assert not uses_repo_tee(None, tmp_path)
+    assert not uses_repo_tee("", tmp_path)
+
+
+def test_remove_local_statusline_preserves_other_keys(tmp_path):
+    path = tmp_path / "settings.local.json"
+    path.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["X"]},
+                "statusLine": {"type": "command", "command": "cmd", "padding": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert remove_local_statusline(path) is True
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data == {"permissions": {"allow": ["X"]}}
+    # nothing left to remove → False
+    assert remove_local_statusline(path) is False
+
+
+def test_remove_local_statusline_missing_file(tmp_path):
+    assert remove_local_statusline(tmp_path / "nope.json") is False
+
+
+@pytest.mark.parametrize("content", ["{broken", "[1]"])
+def test_remove_local_statusline_never_clobbers_malformed(tmp_path, content):
+    path = tmp_path / "settings.local.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(SetupError):
+        remove_local_statusline(path)
+    assert path.read_text(encoding="utf-8") == content
+
+
+# ---------------------------------------------------------------------------
 # Update check (subprocess monkeypatched)
 # ---------------------------------------------------------------------------
 
@@ -240,7 +293,7 @@ def _fake_git(monkeypatch, responses):
         rc, out = responses[argv[3]]
         return FakeProc(rc, out)
 
-    monkeypatch.setattr(setup_claude.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(config_app.asyncio, "create_subprocess_exec", fake_exec)
     return calls
 
 
@@ -288,7 +341,7 @@ def test_upstream_ref_none_when_git_missing(monkeypatch):
     async def boom(*argv, **kwargs):
         raise FileNotFoundError("no git")
 
-    monkeypatch.setattr(setup_claude.asyncio, "create_subprocess_exec", boom)
+    monkeypatch.setattr(config_app.asyncio, "create_subprocess_exec", boom)
     assert asyncio.run(upstream_ref(Path("/repo"))) is None
 
 
@@ -297,8 +350,17 @@ def test_upstream_ref_none_when_git_missing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _isolate_user_settings(monkeypatch, tmp_path):
+    """Point hub_status at a scratch user-level settings file, not the real
+    ~/.claude/settings.json."""
+    path = tmp_path / "user-settings.json"
+    monkeypatch.setattr(config_app, "USER_SETTINGS_PATH", path)
+    return path
+
+
 def test_hub_status_rows_independent_on_malformed_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    _isolate_user_settings(monkeypatch, tmp_path)
     (tmp_path / "settings.json").write_text("{broken", encoding="utf-8")
     rows = hub_status(tmp_path)
     assert set(rows) == {"env", "sidecar", "statusline"}
@@ -310,11 +372,64 @@ def test_hub_status_rows_independent_on_malformed_settings(tmp_path, monkeypatch
 
 def test_hub_status_configured_statusline(tmp_path, monkeypatch):
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    _isolate_user_settings(monkeypatch, tmp_path)
     local = tmp_path / ".claude" / "settings.local.json"
-    recommended = setup_claude.build_statusline_command(
+    recommended = build_statusline_command(
         detect_python3(), tmp_path, None
     )
     merge_local_settings(local, recommended)
     assert hub_status(tmp_path)["statusline"] == "configured"
     merge_local_settings(local, "something else")
     assert hub_status(tmp_path)["statusline"] == "differs from recommended"
+
+
+def test_hub_status_global_tee_layout(tmp_path, monkeypatch):
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    user_settings = _isolate_user_settings(monkeypatch, tmp_path)
+    tee = tmp_path / ".claude" / "hooks" / "ccstatus-tee.py"
+    user_settings.write_text(
+        json.dumps(
+            {
+                "statusLine": {
+                    "type": "command",
+                    "command": f"/usr/bin/python3 {tee} | npx -y ccstatusline@latest",
+                    "padding": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # global tee + no local statusLine → configured globally
+    assert (
+        hub_status(tmp_path)["statusline"]
+        == "configured globally (~/.claude/settings.json runs the tee)"
+    )
+    # a local statusLine shadows the global one → flagged, even when it
+    # matches the recommended local command
+    local = tmp_path / ".claude" / "settings.local.json"
+    merge_local_settings(
+        local, build_statusline_command(detect_python3(), tmp_path, None)
+    )
+    assert (
+        hub_status(tmp_path)["statusline"]
+        == "local statusLine overrides the global tee'd statusline"
+    )
+
+
+def test_hub_status_global_statusline_without_tee_is_not_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    user_settings = _isolate_user_settings(monkeypatch, tmp_path)
+    user_settings.write_text(
+        json.dumps(
+            {
+                "statusLine": {
+                    "type": "command",
+                    "command": "npx -y ccstatusline@latest",
+                    "padding": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # a global renderer with no tee never refreshes the cache → not configured
+    assert hub_status(tmp_path)["statusline"] == "not configured"

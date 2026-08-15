@@ -67,14 +67,14 @@ uv tool update-shell
 **4. Run the setup hub:**
 
 ```sh
-uv run setup_claude.py
+uv run config.py
 ```
 
 This opens a small interactive setup screen (a "hub") listing three independent tasks, each showing its current state. Run one at a time, or pick **Run everything**:
 
 1. **Caption credentials** — the Caption sign-in flow; saves the selected organization's credentials into a local `.env` file and skips anything already saved.
 2. **Sidecar naming** — choose how converted Markdown files are named: visible `contract.docx.md` (the default) or dot-prefixed `.contract.docx.md` (hidden in Finder and plain `ls`). After changing this, the next `uv run startup.py` renames existing converted files to the chosen style automatically. If both styles of the same file somehow exist, startup keeps the one matching your setting and warns you to delete the other — it never deletes either file itself.
-3. **Statusline + usage cache** — writes the status-bar command into `.claude/settings.local.json` (local to your machine, not shared). The command also keeps a small usage cache up to date so the optional usage guard can read your Claude usage. Two variants: the default needs nothing extra installed (a plain built-in renderer); if you have Node and want the fancier `ccstatusline` renderer, the setup screen offers a one-time pinned install into `.statusline/` — the statusline never re-downloads software on refresh.
+3. **Statusline + usage cache** — writes the status-bar command into `.claude/settings.local.json` (local to your machine, not shared). The command also keeps a small usage cache up to date so the optional usage guard can read your Claude usage. Two variants: the default needs nothing extra installed (a plain built-in renderer); if you have Node and want the fancier `ccstatusline` renderer, the setup screen offers a one-time pinned install into `.statusline/` — the statusline never re-downloads software on refresh. Alternatively, if you already run a statusline plugin of your own in your user-level `~/.claude/settings.json`, you can pipe this repo's tee into it (e.g. `python3 <repo>/.claude/hooks/ccstatus-tee.py | <your renderer>`) — the usage cache then refreshes in every folder, setup detects this and writes nothing locally, and it offers to remove a leftover local statusLine that would otherwise override your renderer inside this repo.
 
 The hub also shows a notice at the top when the repo itself has updates available (it never updates automatically).
 
@@ -84,7 +84,7 @@ The hub also shows a notice at the top when the repo itself has updates availabl
 uv run setup_test.py
 ```
 
-**Updating:** from time to time, `git pull` and re-run `uv run setup_claude.py` — the hub shows what is already configured and only changes what you pick.
+**Updating:** from time to time, `git pull` and re-run `uv run config.py` — the hub shows what is already configured and only changes what you pick.
 
 You're done. Skip ahead to [Everyday use](#everyday-use).
 
@@ -118,7 +118,7 @@ If PowerShell says `uv` can't be found right after it's installed, close and reo
 **3. (Optional) Connect Caption and NetDocs credentials:**
 
 ```powershell
-uv run setup_claude.py
+uv run config.py
 ```
 
 That's it — the same workspace, no branch switching required.
