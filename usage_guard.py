@@ -177,16 +177,13 @@ def remove_dir_if_empty():
         pass
 
 
-def _quote_arg(arg, platform=sys.platform):
-    """Quote one command argument for the platform's terminal syntax."""
-    arg = str(arg)
-    if platform == "win32":
-        import subprocess  # lazy: the --hook-json fast path rarely needs it
-
-        return subprocess.list2cmdline([arg])
+def _quote_arg(arg):
+    """Quote one command argument for the POSIX shell these commands are run
+    in — Git Bash on Windows too, so backslash paths are normalized first or
+    the shell eats the separators."""
     import shlex  # lazy: the --hook-json fast path never pays this import
 
-    return shlex.quote(arg)
+    return shlex.quote(str(arg).replace("\\", "/"))
 
 
 def _python_interpreter(platform=None):
@@ -199,10 +196,10 @@ def _python_interpreter(platform=None):
 def _guard_command(option, session_id, platform=None, threshold=None):
     platform = sys.platform if platform is None else platform
     parts = [
-        _quote_arg(_python_interpreter(platform), platform=platform),
-        _quote_arg(SCRIPT_PATH, platform=platform),
+        _quote_arg(_python_interpreter(platform)),
+        _quote_arg(SCRIPT_PATH),
         option,
-        _quote_arg(session_id, platform=platform),
+        _quote_arg(session_id),
     ]
     if threshold is not None:
         parts.extend(("--threshold", f"{threshold:g}"))

@@ -17,7 +17,8 @@ from pathlib import Path
 from .common import (
     SetupError,
     load_settings_or_raise,
-    quote_for_platform,
+    posix_path,
+    shell_quote,
     write_settings,
 )
 
@@ -100,26 +101,26 @@ def installed_script(user_claude_dir: Path) -> Path:
     return Path(user_claude_dir) / "hooks" / SCRIPT_FILENAME
 
 
-def build_statusline_command(
-    python3: str,
-    script_path: Path,
-    *,
-    platform: str = sys.platform,
-) -> str:
+def build_statusline_command(python3: str, script_path: Path) -> str:
     """The statusLine command for ~/.claude/settings.json: the installed
-    statusline script. No Node, no external renderer."""
-    quoted_python = quote_for_platform(python3, platform)
-    quoted_script = quote_for_platform(script_path, platform)
-    return f"{quoted_python} {quoted_script}"
+    statusline script. No Node, no external renderer. Quoted for a POSIX
+    shell on every platform — Claude Code runs this through Git Bash on
+    Windows, where an unquoted backslash path loses its separators."""
+    return f"{shell_quote(python3)} {shell_quote(script_path)}"
 
 
 def uses_installed_script(command: str | None, user_claude_dir: Path) -> bool:
-    """True when a statusLine command runs the installed script (which is
-    what refreshes the usage cache the guard reads). Substring check:
-    quoting on either platform keeps the raw path intact."""
-    if not command:
+    """True when a statusLine command *runs* the installed script (which is
+    what refreshes the usage cache the guard reads).
+
+    A backslash disqualifies the command outright: it was written by a version
+    that quoted for cmd, and the POSIX shell Claude Code actually uses eats
+    those separators, so the command cannot run. Reporting it as wired would
+    hide a broken bar behind a green hub row. Everything else is a substring
+    check — shell quoting keeps the path intact."""
+    if not command or "\\" in command:
         return False
-    return str(installed_script(user_claude_dir)) in command
+    return str(installed_script(user_claude_dir)).replace("\\", "/") in command
 
 
 def install_state(repo_root: Path, user_claude_dir: Path) -> str:
@@ -196,7 +197,6 @@ def prepare_user_statusline(
     user_claude_dir: Path,
     python3: str,
     *,
-    platform: str = sys.platform,
     settings_path: Path | None = None,
 ) -> PreparedStatuslineInstallation:
     """Validate and prepare an install without copying or writing files."""
@@ -207,7 +207,7 @@ def prepare_user_statusline(
             f"({source}) — update the toolkit (git pull) and try again."
         )
     target = installed_script(user_claude_dir)
-    command = build_statusline_command(python3, target, platform=platform)
+    command = build_statusline_command(python3, target)
     exact_settings_path = (
         Path(settings_path)
         if settings_path is not None
@@ -245,7 +245,6 @@ def install_user_statusline(
     user_claude_dir: Path,
     python3: str,
     *,
-    platform: str = sys.platform,
     settings_path: Path | None = None,
 ) -> str:
     """Install the statusline account-wide: copy the script into
@@ -256,7 +255,6 @@ def install_user_statusline(
         repo_root,
         user_claude_dir,
         python3,
-        platform=platform,
         settings_path=settings_path,
     )
     commit_user_statusline(prepared)

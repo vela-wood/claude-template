@@ -24,7 +24,8 @@ from config.app import (
 from config.common import (
     SetupError,
     local_settings_path,
-    quote_for_platform,
+    posix_path,
+    shell_quote,
     user_claude_dir,
     write_settings,
 )
@@ -149,7 +150,7 @@ def test_write_settings_replace_failure_preserves_original_and_cleans_temp(
 
 
 # ---------------------------------------------------------------------------
-# build_statusline_command / quote_for_platform
+# build_statusline_command / shell_quote
 # ---------------------------------------------------------------------------
 
 
@@ -157,7 +158,6 @@ def test_build_command_render_posix():
     assert build_statusline_command(
         "/usr/bin/python3",
         Path("/home/u/.claude/hooks/ccstatus.py"),
-        platform="linux",
     ) == "/usr/bin/python3 /home/u/.claude/hooks/ccstatus.py"
 
 
@@ -165,28 +165,47 @@ def test_build_command_posix_quotes_spaces():
     cmd = build_statusline_command(
         "/usr/bin/python3",
         Path("/my home/.claude/hooks/ccstatus.py"),
-        platform="linux",
     )
     assert cmd == (
         "/usr/bin/python3 '/my home/.claude/hooks/ccstatus.py'"
     )
 
 
-def test_build_command_windows_double_quotes():
+def test_build_command_windows_path_is_posix_quoted():
+    # Claude Code runs statusLine through Git Bash on Windows: a bare
+    # backslash path loses every separator there, so quote and normalize.
     cmd = build_statusline_command(
         r"C:\Program Files\Python\python.exe",
-        Path(r"/home x/.claude/hooks/ccstatus.py"),
-        platform="win32",
+        Path(r"C:\Users\u\.claude\hooks\ccstatus.py"),
     )
-    assert cmd.startswith('"C:\\Program Files\\Python\\python.exe" ')
-    assert cmd.endswith('ccstatus.py"')
-    assert "'" not in cmd
+    assert cmd == (
+        "'C:/Program Files/Python/python.exe' "
+        "C:/Users/u/.claude/hooks/ccstatus.py"
+    )
+    assert "\\" not in cmd
 
 
-def test_quote_for_platform():
-    assert quote_for_platform("plain", "linux") == "plain"
-    assert quote_for_platform("has space", "linux") == "'has space'"
-    assert quote_for_platform("has space", "win32") == '"has space"'
+def test_build_command_windows_spaceless_path_still_survives_bash():
+    # The original bug: list2cmdline left a space-free path unquoted, and
+    # bash then ate every backslash.
+    cmd = build_statusline_command(
+        r"C:\Python\python.exe",
+        Path(r"C:\Users\u\.claude\hooks\ccstatus.py"),
+    )
+    assert "\\" not in cmd
+    assert "C:/Python/python.exe" in cmd
+
+
+def test_shell_quote():
+    assert shell_quote("plain") == "plain"
+    assert shell_quote("has space") == "'has space'"
+    assert shell_quote(r"C:\Program Files\python.exe") == "'C:/Program Files/python.exe'"
+    assert shell_quote(r"C:\Python\python.exe") == "C:/Python/python.exe"
+
+
+def test_posix_path_normalizes_separators():
+    assert posix_path(r"C:\a\b") == "C:/a/b"
+    assert posix_path("/a/b") == "/a/b"
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +310,7 @@ def test_install_state_missing_then_current_then_outdated(tmp_path):
     repo = _fake_repo(tmp_path)
     user_dir = tmp_path / ".claude"
     assert install_state(repo, user_dir) == "missing"
-    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    install_user_statusline(repo, user_dir, "/usr/bin/python3")
     assert install_state(repo, user_dir) == "current"
     script_source(repo).write_text("# statusline v2\n", encoding="utf-8")
     assert install_state(repo, user_dir) == "outdated"
@@ -306,11 +325,11 @@ def test_install_user_statusline_copies_and_wires(tmp_path):
         json.dumps({"permissions": {"allow": ["X"]}}), encoding="utf-8"
     )
     command = install_user_statusline(
-        repo, user_dir, "/usr/bin/python3", platform="linux"
+        repo, user_dir, "/usr/bin/python3"
     )
     target = installed_script(user_dir)
     assert target.read_text(encoding="utf-8") == "# statusline v1\n"
-    assert command == f"/usr/bin/python3 {target}"
+    assert command == f"/usr/bin/python3 {posix_path(target)}"
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["permissions"] == {"allow": ["X"]}  # untouched
     assert data["statusLine"] == {
@@ -320,7 +339,7 @@ def test_install_user_statusline_copies_and_wires(tmp_path):
     }
     # reinstall is idempotent
     assert (
-        install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+        install_user_statusline(repo, user_dir, "/usr/bin/python3")
         == command
     )
 
@@ -333,9 +352,7 @@ def test_install_user_statusline_uses_explicit_settings_path(tmp_path):
     command = install_user_statusline(
         repo,
         user_dir,
-        "/usr/bin/python3",
-        platform="linux",
-        settings_path=explicit_settings,
+        "/usr/bin/python3",        settings_path=explicit_settings,
     )
 
     assert statusline_settings(explicit_settings) == command
@@ -359,7 +376,7 @@ def test_install_user_statusline_never_clobbers_malformed_settings(tmp_path):
     settings.parent.mkdir(parents=True)
     settings.write_text("{broken", encoding="utf-8")
     with pytest.raises(SetupError):
-        install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+        install_user_statusline(repo, user_dir, "/usr/bin/python3")
     assert settings.read_text(encoding="utf-8") == "{broken"
     assert not installed_script(user_dir).exists()
 
@@ -472,7 +489,8 @@ def test_merge_statusline_settings_never_clobbers_malformed(tmp_path, content):
 
 def test_uses_installed_script(tmp_path):
     user_dir = tmp_path / ".claude"
-    script = installed_script(user_dir)
+    # the forward-slash form we write, on either host
+    script = posix_path(installed_script(user_dir))
     assert uses_installed_script(f"/usr/bin/python3 {script}", user_dir)
     # shlex-quoted paths keep the raw path as a substring
     assert uses_installed_script(f"/usr/bin/python3 '{script}'", user_dir)
@@ -483,6 +501,19 @@ def test_uses_installed_script(tmp_path):
     )
     assert not uses_installed_script(None, user_dir)
     assert not uses_installed_script("", user_dir)
+
+
+def test_uses_installed_script_rejects_stale_backslash_command():
+    """A pre-fix install has a cmd-quoted backslash command that cannot run in
+    the POSIX shell Claude Code uses, so it must read as not-wired and prompt
+    a reinstall rather than showing a green hub row over a dead status bar."""
+    user_dir = Path(r"C:\Users\u\.claude")
+    script = installed_script(user_dir)
+    posix = str(script).replace("\\", "/")
+    assert uses_installed_script(f"'C:/py/python.exe' '{posix}'", user_dir)
+    assert not uses_installed_script(
+        f'"C:\\py\\python.exe" "{script}"', user_dir
+    )
 
 
 def test_remove_local_statusline_preserves_other_keys(tmp_path):
@@ -507,6 +538,16 @@ def test_remove_local_statusline_missing_file(tmp_path):
     assert remove_local_statusline(tmp_path / "nope.json") is False
 
 
+@pytest.mark.parametrize("content", ["", "   \n\t "])
+def test_empty_settings_file_reads_as_no_settings(tmp_path, content):
+    """A hand-repaired settings file is often left empty; that is 'nothing
+    configured yet', not malformed JSON we must refuse to touch."""
+    path = tmp_path / "settings.local.json"
+    path.write_text(content, encoding="utf-8")
+    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo")) is True
+    assert guard_hooks_present(path)
+
+
 @pytest.mark.parametrize("content", ["{broken", "[1]"])
 def test_remove_local_statusline_never_clobbers_malformed(tmp_path, content):
     path = tmp_path / "settings.local.json"
@@ -522,7 +563,7 @@ def test_remove_local_statusline_never_clobbers_malformed(tmp_path, content):
 
 
 def test_build_guard_commands_posix():
-    cmds = build_guard_hook_commands("/usr/bin/python3", Path("/repo"), platform="linux")
+    cmds = build_guard_hook_commands("/usr/bin/python3", Path("/repo"))
     assert cmds["PreToolUse"] == (
         "[ ! -d /repo/.ccguard ] || /usr/bin/python3 /repo/usage_guard.py --hook-json"
     )
@@ -530,9 +571,7 @@ def test_build_guard_commands_posix():
 
 
 def test_build_guard_commands_posix_quotes_spaces():
-    cmds = build_guard_hook_commands(
-        "/usr/bin/python3", Path("/my repo"), platform="linux"
-    )
+    cmds = build_guard_hook_commands("/usr/bin/python3", Path("/my repo"))
     assert cmds["PreToolUse"] == (
         "[ ! -d '/my repo/.ccguard' ] || /usr/bin/python3 "
         "'/my repo/usage_guard.py' --hook-json"
@@ -542,40 +581,62 @@ def test_build_guard_commands_posix_quotes_spaces():
     )
 
 
-def test_build_guard_commands_win32():
-    repo = Path(r"C:\repo")
-    cmds = build_guard_hook_commands(r"C:\Python\python.exe", repo, platform="win32")
-    ccguard = str(repo / ".ccguard")
-    script = str(repo / "usage_guard.py")
+def test_build_guard_commands_windows_paths_are_posix():
+    # Claude Code runs hook commands through Git Bash on Windows, never cmd:
+    # `if exist` doesn't parse there, and a trailing backslash before a quote
+    # escapes it, which took down every tool call in the session.
+    cmds = build_guard_hook_commands(r"C:\Python\python.exe", Path(r"C:\repo"))
     assert cmds["PreToolUse"] == (
-        f'if exist "{ccguard}\\" C:\\Python\\python.exe {script} --hook-json'
+        "[ ! -d C:/repo/.ccguard ] || C:/Python/python.exe "
+        "C:/repo/usage_guard.py --hook-json"
     )
-    assert cmds["SessionStart"] == f"C:\\Python\\python.exe {script} --session-start"
+    assert cmds["SessionStart"] == (
+        "C:/Python/python.exe C:/repo/usage_guard.py --session-start"
+    )
 
 
-def test_build_guard_commands_win32_spaces_and_trailing_backslash():
-    repo = Path(r"C:\my repo")
+def test_build_guard_commands_windows_spaces():
     cmds = build_guard_hook_commands(
-        r"C:\Program Files\Python\python.exe", repo, platform="win32"
+        r"C:\Program Files\Python\python.exe", Path(r"C:\my repo")
     )
-    ccguard = str(repo / ".ccguard")
-    pre = cmds["PreToolUse"]
-    # single trailing backslash inside the quotes (directory test); never doubled
-    assert f'if exist "{ccguard}\\" ' in pre
-    assert ccguard + '\\\\"' not in pre
-    assert '"C:\\Program Files\\Python\\python.exe"' in pre
-    assert '"C:\\Program Files\\Python\\python.exe"' in cmds["SessionStart"]
+    assert cmds["PreToolUse"] == (
+        "[ ! -d 'C:/my repo/.ccguard' ] || 'C:/Program Files/Python/python.exe' "
+        "'C:/my repo/usage_guard.py' --hook-json"
+    )
+    assert cmds["SessionStart"] == (
+        "'C:/Program Files/Python/python.exe' "
+        "'C:/my repo/usage_guard.py' --session-start"
+    )
+
+
+@pytest.mark.parametrize(
+    "python3, repo",
+    [
+        ("/usr/bin/python3", Path("/repo")),
+        ("/usr/bin/python3", Path("/my repo")),
+        (r"C:\Python\python.exe", Path(r"C:\repo")),
+        (r"C:\Program Files\Python\python.exe", Path(r"C:\my repo")),
+    ],
+)
+def test_guard_commands_are_always_bash_safe(python3, repo):
+    """Regression guard for the cmd-syntax bug: nothing we emit may contain a
+    backslash (bash eats it) or cmd-only `if exist`."""
+    for command in build_guard_hook_commands(python3, repo).values():
+        assert "\\" not in command
+        assert "if exist" not in command
+    statusline = build_statusline_command(python3, Path(repo) / "ccstatus.py")
+    assert "\\" not in statusline
 
 
 def test_merge_guard_hooks_creates_file_and_is_idempotent(tmp_path):
     path = tmp_path / ".claude" / "settings.local.json"
-    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo"), platform="linux") is True
+    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo")) is True
     before = path.read_text(encoding="utf-8")
     data = json.loads(before)
     assert [e["matcher"] for e in data["hooks"]["PreToolUse"]] == ["*"]
     assert [e["matcher"] for e in data["hooks"]["SessionStart"]] == ["startup|clear"]
     # second run: identical → no write
-    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo"), platform="linux") is False
+    assert merge_guard_hooks(path, "/usr/bin/python3", Path("/repo")) is False
     assert path.read_text(encoding="utf-8") == before
 
 
@@ -616,7 +677,7 @@ def test_merge_guard_hooks_replaces_handwritten_entries(tmp_path):
         },
     }
     path.write_text(json.dumps(seeded), encoding="utf-8")
-    assert merge_guard_hooks(path, "/new/python3", Path("/repo"), platform="linux") is True
+    assert merge_guard_hooks(path, "/new/python3", Path("/repo")) is True
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["permissions"] == seeded["permissions"]
     assert data["prefersReducedMotion"] is False
@@ -647,7 +708,7 @@ def test_merge_guard_hooks_preserves_foreign_hooks_and_events(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert merge_guard_hooks(path, "/p", Path("/repo"), platform="linux") is True
+    assert merge_guard_hooks(path, "/p", Path("/repo")) is True
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["hooks"]["Stop"] == [{"matcher": "", "hooks": [foreign]}]
     pre = data["hooks"]["PreToolUse"]
@@ -664,7 +725,7 @@ def test_merge_guard_hooks_never_clobbers_malformed(tmp_path, content):
     path = tmp_path / "settings.local.json"
     path.write_text(content, encoding="utf-8")
     with pytest.raises(SetupError):
-        merge_guard_hooks(path, "/p", Path("/repo"), platform="linux")
+        merge_guard_hooks(path, "/p", Path("/repo"))
     assert path.read_text(encoding="utf-8") == content
 
 
@@ -687,7 +748,7 @@ def test_guard_hooks_present_truth_table(tmp_path):
     }
     path.write_text(json.dumps(only_pre), encoding="utf-8")
     assert guard_hooks_present(path) is False  # one event is not enough
-    merge_guard_hooks(path, "/p", Path("/repo"), platform="linux")
+    merge_guard_hooks(path, "/p", Path("/repo"))
     assert guard_hooks_present(path) is True
 
 
@@ -725,7 +786,7 @@ def test_coordinated_installer_user_preflight_aborts_before_every_write(
     local_settings.write_bytes(local_original)
 
     with pytest.raises(SetupError):
-        install_statusline_and_guard("/usr/bin/python3", platform="linux")
+        install_statusline_and_guard("/usr/bin/python3")
 
     assert user_settings.read_bytes() == user_content.encode("utf-8")
     assert local_settings.read_bytes() == local_original
@@ -757,7 +818,7 @@ def test_coordinated_installer_local_preflight_aborts_before_every_write(
     local_settings.write_bytes(local_original)
 
     with pytest.raises(SetupError):
-        install_statusline_and_guard("/usr/bin/python3", platform="linux")
+        install_statusline_and_guard("/usr/bin/python3")
 
     assert user_settings.read_bytes() == user_original
     assert local_settings.read_bytes() == local_original
@@ -769,11 +830,11 @@ def test_coordinated_installer_fresh_success_returns_false(tmp_path, monkeypatch
         monkeypatch, tmp_path
     )
 
-    assert install_statusline_and_guard("/usr/bin/python3", platform="linux") is False
+    assert install_statusline_and_guard("/usr/bin/python3") is False
 
     assert installed_script(user_dir).read_bytes() == script_source(repo).read_bytes()
     assert statusline_settings(user_settings) == (
-        f"/usr/bin/python3 {installed_script(user_dir)}"
+        f"/usr/bin/python3 {posix_path(installed_script(user_dir))}"
     )
     assert not (user_dir / "settings.json").exists()
     assert guard_hooks_present(local_settings)
@@ -792,7 +853,7 @@ def test_coordinated_installer_reports_removed_local_override(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    assert install_statusline_and_guard("/usr/bin/python3", platform="linux") is True
+    assert install_statusline_and_guard("/usr/bin/python3") is True
 
     data = json.loads(local_settings.read_text(encoding="utf-8"))
     assert "statusLine" not in data
@@ -800,34 +861,20 @@ def test_coordinated_installer_reports_removed_local_override(tmp_path, monkeypa
     assert guard_hooks_present(local_settings)
 
 
-def test_coordinated_installer_forwards_win32_to_both_builders(
+def test_coordinated_installer_writes_bash_safe_windows_commands(
     tmp_path, monkeypatch
 ):
+    """End-to-end: a Windows interpreter path must land in both settings files
+    quoted for bash, since that is the shell Claude Code runs them in."""
     _, local_settings, _, user_settings = _isolate_install_globals(
         monkeypatch, tmp_path, repo_name="repo with spaces"
     )
-    calls = []
-    real_status_builder = config_statusline.build_statusline_command
-    real_guard_builder = config_guard.build_guard_hook_commands
+    install_statusline_and_guard(r"C:\Program Files\Python\python.exe")
 
-    def status_builder(python3, script_path, *, platform=sys.platform):
-        calls.append(("statusline", platform))
-        return real_status_builder(python3, script_path, platform=platform)
+    statusline_cmd = statusline_settings(user_settings)
+    assert statusline_cmd.startswith("'C:/Program Files/Python/python.exe' ")
+    assert "\\" not in statusline_cmd
 
-    def guard_builder(python3, repo_root, *, platform=sys.platform):
-        calls.append(("guard", platform))
-        return real_guard_builder(python3, repo_root, platform=platform)
-
-    monkeypatch.setattr(config_statusline, "build_statusline_command", status_builder)
-    monkeypatch.setattr(config_guard, "build_guard_hook_commands", guard_builder)
-    install_statusline_and_guard(
-        r"C:\Program Files\Python\python.exe", platform="win32"
-    )
-
-    assert calls == [("statusline", "win32"), ("guard", "win32")]
-    assert statusline_settings(user_settings).startswith(
-        '"C:\\Program Files\\Python\\python.exe" '
-    )
     local_data = json.loads(local_settings.read_text(encoding="utf-8"))
     guard_commands = [
         hook["command"]
@@ -835,10 +882,11 @@ def test_coordinated_installer_forwards_win32_to_both_builders(
         for entry in local_data["hooks"][event]
         for hook in entry["hooks"]
     ]
-    assert all(
-        '"C:\\Program Files\\Python\\python.exe"' in command
-        for command in guard_commands
-    )
+    assert guard_commands
+    for command in guard_commands:
+        assert "'C:/Program Files/Python/python.exe'" in command
+        assert "\\" not in command
+        assert "if exist" not in command
 
 
 def test_coordinated_installer_prepares_both_files_before_copy_and_never_reloads(
@@ -914,7 +962,7 @@ def test_coordinated_installer_prepares_both_files_before_copy_and_never_reloads
     monkeypatch.setattr(config_statusline, "write_settings", status_write)
     monkeypatch.setattr(config_guard, "write_settings", guard_write)
 
-    install_statusline_and_guard("/usr/bin/python3", platform="linux")
+    install_statusline_and_guard("/usr/bin/python3")
 
     assert events == [
         "status-prepare-start",
@@ -1043,14 +1091,14 @@ def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
     # nothing installed → not set up
     assert hub_status(repo)["statusline"] == "not set up yet"
     # installed and wired, but guard hooks not yet written → flagged
-    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    install_user_statusline(repo, user_dir, "/usr/bin/python3")
     assert hub_status(repo)["statusline"] == (
         "needs attention — the usage guard isn't hooked up in this "
         "folder (open this item to fix)"
     )
     # guard hooks installed too → ready
     local = repo / ".claude" / "settings.local.json"
-    merge_guard_hooks(local, "/usr/bin/python3", repo, platform="linux")
+    merge_guard_hooks(local, "/usr/bin/python3", repo)
     assert hub_status(repo)["statusline"] == (
         "ready — status bar and usage guard installed, works in every folder"
     )
@@ -1072,7 +1120,7 @@ def test_hub_status_script_copied_but_not_wired_is_not_configured(tmp_path, monk
     repo = _fake_repo(tmp_path)
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
     user_dir = _isolate_user_claude(monkeypatch, tmp_path)
-    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    install_user_statusline(repo, user_dir, "/usr/bin/python3")
     # statusLine replaced by something that never runs the script → the cache
     # never refreshes → not configured
     merge_statusline_settings(user_dir / "settings.json", "npx -y ccstatusline@latest")
@@ -1093,8 +1141,8 @@ def test_hub_status_uses_local_settings_path_for_override_and_guard(
         return custom_local
 
     monkeypatch.setattr(config_app, "local_settings_path", custom_local_path)
-    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
-    merge_guard_hooks(custom_local, "/usr/bin/python3", repo, platform="linux")
+    install_user_statusline(repo, user_dir, "/usr/bin/python3")
+    merge_guard_hooks(custom_local, "/usr/bin/python3", repo)
     assert hub_status(repo)["statusline"] == (
         "ready — status bar and usage guard installed, works in every folder"
     )

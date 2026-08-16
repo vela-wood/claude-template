@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -200,11 +199,7 @@ def hub_status(repo_root: Path) -> dict[str, str]:
     return rows
 
 
-def install_statusline_and_guard(
-    python3: str,
-    *,
-    platform: str = sys.platform,
-) -> bool:
+def install_statusline_and_guard(python3: str) -> bool:
     """Validate both settings files, then install them in commit order.
 
     The return value reports only whether a repo-local statusLine override
@@ -214,14 +209,12 @@ def install_statusline_and_guard(
         REPO_ROOT,
         USER_CLAUDE_DIR,
         python3,
-        platform=platform,
         settings_path=USER_SETTINGS_PATH,
     )
     guard_prepared = prepare_guard_hooks(
         LOCAL_SETTINGS_PATH,
         python3,
         REPO_ROOT,
-        platform=platform,
     )
 
     local_settings = dict(guard_prepared.settings)

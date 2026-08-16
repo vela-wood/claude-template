@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -81,29 +82,32 @@ def _session_start(
 
 
 @pytest.mark.parametrize(
-    ("arg", "platform", "expected"),
+    ("arg", "expected"),
     [
-        ("plain", "linux", "plain"),
-        ("has space", "linux", "'has space'"),
-        ("plain", "win32", "plain"),
-        ("has space", "win32", '"has space"'),
-        (r"C:\Program Files\python.exe", "win32", '"C:\\Program Files\\python.exe"'),
+        ("plain", "plain"),
+        ("has space", "'has space'"),
+        (r"C:\Python\python.exe", "C:/Python/python.exe"),
+        (r"C:\Program Files\python.exe", "'C:/Program Files/python.exe'"),
     ],
 )
-def test_quote_arg(arg, platform, expected):
-    assert usage_guard._quote_arg(arg, platform=platform) == expected
+def test_quote_arg(arg, expected):
+    assert usage_guard._quote_arg(arg) == expected
 
 
 @pytest.mark.parametrize(
     "arg",
     [
         'embedded"quote',
-        'space and trailing slash\\',
+        "space and trailing slash\\",
         r'C:\path with spaces\"quoted"',
     ],
 )
-def test_windows_quote_arg_matches_list2cmdline(arg):
-    assert usage_guard._quote_arg(arg, platform="win32") == subprocess.list2cmdline([arg])
+def test_quote_arg_is_bash_safe(arg):
+    """These commands are pasted into a terminal that is bash on every
+    platform, so no backslash may survive to be eaten as an escape."""
+    quoted = usage_guard._quote_arg(arg)
+    assert "\\" not in quoted
+    assert shlex.split(quoted) == [arg.replace("\\", "/")]
 
 
 def test_config_dir_nonempty_override_and_empty_default(tmp_path, monkeypatch):

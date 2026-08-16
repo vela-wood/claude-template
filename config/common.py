@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
-import sys
 from pathlib import Path
 
 from fsio import atomic_write_text
@@ -32,12 +30,18 @@ def local_settings_path(repo_root: Path) -> Path:
     return Path(repo_root) / ".claude" / "settings.local.json"
 
 
-def quote_for_platform(arg: object, platform: str = sys.platform) -> str:
-    """Quote one command argument for Windows cmd or a POSIX shell."""
-    rendered = str(arg)
-    if platform == "win32":
-        return subprocess.list2cmdline([rendered])
-    return shlex.quote(rendered)
+def posix_path(arg: object) -> str:
+    """Render a path with forward slashes. Windows accepts them everywhere,
+    and they cannot be eaten as escapes by the shell that runs our commands."""
+    return str(arg).replace("\\", "/")
+
+
+def shell_quote(arg: object) -> str:
+    """Quote one argument for the POSIX shell that runs Claude Code hooks and
+    the statusline. On Windows that shell is Git Bash, not cmd: a backslash
+    path is mangled there (bare paths lose every separator, and a trailing
+    backslash escapes the closing quote), so separators are normalized first."""
+    return shlex.quote(posix_path(arg))
 
 
 def load_settings_or_raise(path: Path) -> dict:
@@ -45,8 +49,13 @@ def load_settings_or_raise(path: Path) -> dict:
     path = Path(path)
     if not path.exists():
         return {}
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        # An empty file is what's left after a hand-repair; treat it as "no
+        # settings yet" rather than malformed JSON we must refuse to touch.
+        return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
     except ValueError as exc:
         raise SetupError(
             f"A settings file has a problem and setup can't change it "

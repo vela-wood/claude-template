@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import copy
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from .common import (
     SetupError,
     load_settings_or_raise,
-    quote_for_platform,
+    shell_quote,
     write_settings,
 )
 
@@ -32,30 +31,21 @@ def _is_ours(hook: object) -> bool:
     )
 
 
-def build_guard_hook_commands(
-    python3: str,
-    repo_root: Path,
-    *,
-    platform: str = sys.platform,
-) -> dict[str, str]:
+def build_guard_hook_commands(python3: str, repo_root: Path) -> dict[str, str]:
     """Hook commands per event. The PreToolUse fast path shell-tests for
     .ccguard/ before spawning Python, so unarmed sessions (the default)
-    never pay an interpreter start per tool call."""
+    never pay an interpreter start per tool call.
+
+    One POSIX form on every platform: Claude Code runs hook commands through
+    a POSIX shell (Git Bash on Windows), never cmd, so a cmd `if exist` test
+    fails to parse there and takes every tool call down with it."""
     script = Path(repo_root) / GUARD_SCRIPT_FILENAME
     ccguard = Path(repo_root) / ".ccguard"
-    q_python = quote_for_platform(python3, platform)
-    q_script = quote_for_platform(script, platform)
-    if platform == "win32":
-        # Hand-built dir token: cmd has no backslash escaping inside quotes,
-        # and the trailing \ makes `if exist` a directory test. list2cmdline
-        # would double that trailing backslash, breaking the test.
-        dir_token = '"' + str(ccguard) + '\\"'
-        pretooluse = f"if exist {dir_token} {q_python} {q_script} --hook-json"
-    else:
-        q_ccguard = quote_for_platform(ccguard, platform)
-        pretooluse = f"[ ! -d {q_ccguard} ] || {q_python} {q_script} --hook-json"
+    q_python = shell_quote(python3)
+    q_script = shell_quote(script)
+    q_ccguard = shell_quote(ccguard)
     return {
-        "PreToolUse": pretooluse,
+        "PreToolUse": f"[ ! -d {q_ccguard} ] || {q_python} {q_script} --hook-json",
         "SessionStart": f"{q_python} {q_script} --session-start",
     }
 
@@ -73,8 +63,6 @@ def prepare_guard_hooks(
     path: Path,
     python3: str,
     repo_root: Path,
-    *,
-    platform: str = sys.platform,
 ) -> PreparedGuardHooks:
     """Validate and merge guard hooks in memory without writing anything."""
     path = Path(path)
@@ -95,7 +83,7 @@ def prepare_guard_hooks(
             )
     snapshot = copy.deepcopy(data)
 
-    commands = build_guard_hook_commands(python3, repo_root, platform=platform)
+    commands = build_guard_hook_commands(python3, repo_root)
     for event, matcher in GUARD_MATCHERS.items():
         entries = []
         for entry in hooks.get(event, []):
@@ -123,15 +111,9 @@ def commit_guard_hooks(prepared: PreparedGuardHooks) -> None:
         write_settings(prepared.path, prepared.settings)
 
 
-def merge_guard_hooks(
-    path: Path,
-    python3: str,
-    repo_root: Path,
-    *,
-    platform: str = sys.platform,
-) -> bool:
+def merge_guard_hooks(path: Path, python3: str, repo_root: Path) -> bool:
     """Install or replace guard hooks, preserving unrelated settings."""
-    prepared = prepare_guard_hooks(path, python3, repo_root, platform=platform)
+    prepared = prepare_guard_hooks(path, python3, repo_root)
     commit_guard_hooks(prepared)
     return prepared.changed
 
