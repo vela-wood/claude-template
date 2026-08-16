@@ -198,6 +198,27 @@ The two converters produce identical worst-file lists at identical rates — the
 
 **For Word edits,** only the `/redline` skill is used. **For a human-readable comparison document** from two existing `.docx` files, use `/compare`.
 
+### Status bar and usage guard
+
+Once installed from the setup hub, the status bar appears at the bottom of every Claude Code session and shows context usage, model + effort + token speed, prompt-cache countdown, git branch, 5-hour usage, and free memory. It is a single Python script (`ccstatus.py`) with no Node, no network, and no extra install; each segment fails independently, so a missing field just drops that piece of the bar instead of blanking the line.
+
+Writing that bar also refreshes a small cache file (`ccstatus.json`) next to your Claude config. The **usage guard** (`usage_guard.py`) reads only that cache — it never makes network calls of its own.
+
+How the guard behaves day to day:
+
+- It is **off by default**. When a session starts and any usage window is already above 90%, Claude offers to arm a one-session guard that stops work at 99%. Declining or ignoring the offer leaves it off.
+- Arming applies to that session only. The flag expires after six hours of inactivity, so it will not silently follow you into next week's work.
+- It **fails open**. A missing or stale cache can produce a warning but can never block a tool call, and `ScheduleWakeup` and `AskUserQuestion` stay allowed even while armed, so you can always be asked and always recover.
+- To check your usage yourself at any time:
+
+```sh
+uv run usage_guard.py
+```
+
+  Exit code 0 means under threshold, 1 means at or over it, and 2 means the cache is missing or stale (usually: the status bar was never installed).
+
+Until you install the status bar from the setup hub, the cache never refreshes and the guard quietly does nothing.
+
 ---
 
 ## Cross-platform rules for generated shell commands
@@ -222,6 +243,20 @@ The assistant's behavior is defined in a few files at the repo root:
 - **`AGENTS.md`** — the primary instructions (role, rules, workflow).
 - **`CLAUDE.md`** — a small file that points Claude at `AGENTS.md` and `USERPREFS.md`.
 - **`USERPREFS.md`** — your personal preferences (kept local, not shared).
+
+Two commands are **for humans only** and the assistant is instructed never to run them: `uv run config.py` and bare `uv run nd.py`. Both open interactive full-screen terminal interfaces that an agent cannot drive. If setup looks needed, the assistant will tell you to run it yourself.
+
+---
+
+## Running the tests
+
+The repo ships a test suite covering conversion, the setup hub, the status bar, the usage guard, and the cross-platform command-quoting rules above:
+
+```sh
+uv run pytest
+```
+
+`pytest` comes from the `dev` dependency group; `uv run pytest` pulls it in without a separate install step.
 
 ---
 
@@ -281,6 +316,8 @@ uv run .claude/skills/compare/scripts/run_compare.py original.docx modified.docx
 ### `/sigcheck` — check signature blocks
 
 Verifies the spelling and consistency of signature blocks across a set of agreements. Use it to compare signatories across documents, confirm names/titles/addresses, or build a signatory table for a deal.
+
+It reads the converted Markdown sidecars, including dot-prefixed ones, and always writes visible output names (`.contract.docx.md` → `contract.docx_sigs.md`). If two inputs would produce the same output name, it reports the colliding pair and writes nothing rather than overwriting.
 
 ### `/caption` — meeting transcripts
 
