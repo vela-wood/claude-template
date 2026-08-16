@@ -79,6 +79,8 @@ It outputs:
 
 It also reports any PDFs that may need OCR. If OCR is needed, ask the user before running `uv run startup.py --ocr`. PDFs pending OCR are never sent to the generic PDF converter.
 
+OCR shells out to `focr` (Franken OCR), which is not installed by default. If `--ocr` reports that the command was not found, do not try to install it yourself: ask the user to run `uv run config.py` (human-only, see §4.7) and pick "Scanned-document reader (OCR)", which installs the tool and its ~4 GB model. `startup.py` finds `focr` on `PATH` or in the installer's own directories (`~/.local/bin`, `%LOCALAPPDATA%\Programs\focr`), so it works even before a terminal restart.
+
 Do not edit source files while `startup.py` is running; changes made mid-run are detected and fail that file's conversion, and it is retried on the next run.
 
 Procedure:

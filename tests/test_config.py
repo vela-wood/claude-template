@@ -14,6 +14,7 @@ import repo_settings
 from config import app as config_app
 from config import common as config_common
 from config import guard as config_guard
+from config import ocr as config_ocr
 from config import statusline as config_statusline
 from config.app import (
     count_commits_behind,
@@ -1077,7 +1078,7 @@ def test_hub_status_rows_independent_on_malformed_settings(tmp_path, monkeypatch
     _isolate_user_claude(monkeypatch, tmp_path)
     (repo / "settings.json").write_text("{broken", encoding="utf-8")
     rows = hub_status(repo)
-    assert set(rows) == {"env", "sidecar", "statusline"}
+    assert set(rows) == {"env", "sidecar", "statusline", "ocr"}
     assert "a settings file has a problem" in rows["sidecar"]
     assert "delete settings.json and run setup again" in rows["sidecar"]
     assert rows["env"] == "not set up yet"
@@ -1152,3 +1153,196 @@ def test_hub_status_uses_local_settings_path_for_override_and_guard(
         "status bar (open this item to fix)"
     )
     assert seen == [repo, repo]
+
+
+# ---------------------------------------------------------------------------
+# OCR task (config/ocr.py)
+# ---------------------------------------------------------------------------
+
+
+def _fake_platform(monkeypatch, *, windows: bool):
+    monkeypatch.setattr(config_ocr, "_is_windows", lambda: windows)
+
+
+def test_find_focr_prefers_path(monkeypatch):
+    _fake_platform(monkeypatch, windows=False)
+    monkeypatch.setattr(config_ocr.shutil, "which", lambda name: "/usr/bin/focr")
+    assert config_ocr.find_focr() == "/usr/bin/focr"
+
+
+def test_find_focr_falls_back_to_installer_dir(monkeypatch, tmp_path):
+    """A fresh POSIX install only edits shell rc files, so the binary is not
+    on PATH in this process — it must still be found."""
+    _fake_platform(monkeypatch, windows=False)
+    monkeypatch.setattr(config_ocr.shutil, "which", lambda name: None)
+    home = tmp_path / "home"
+    binary = home / ".local" / "bin" / "focr"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(config_ocr.Path, "home", staticmethod(lambda: home))
+    assert config_ocr.find_focr() == str(binary)
+
+
+def test_find_focr_none_when_nowhere(monkeypatch, tmp_path):
+    _fake_platform(monkeypatch, windows=False)
+    monkeypatch.setattr(config_ocr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(config_ocr.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(config_ocr, "install_dirs", lambda: [tmp_path / "nope"])
+    assert config_ocr.find_focr() is None
+
+
+def test_windows_binary_and_dirs_use_localappdata(monkeypatch, tmp_path):
+    _fake_platform(monkeypatch, windows=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    assert config_ocr.binary_name() == "focr.exe"
+    assert config_ocr.install_dirs() == [
+        tmp_path / "AppData" / "Local" / "Programs" / "focr"
+    ]
+    assert config_ocr.model_cache_dir() == tmp_path / "AppData" / "Local" / "franken_ocr"
+
+
+def test_windows_dirs_fall_back_to_userprofile(monkeypatch, tmp_path):
+    _fake_platform(monkeypatch, windows=True)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert config_ocr.install_dirs() == [
+        tmp_path / "AppData" / "Local" / "Programs" / "focr"
+    ]
+
+
+def test_model_installed_finds_nested_artifact(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_ocr, "model_cache_dir", lambda: tmp_path)
+    assert config_ocr.model_installed() is False
+    nested = tmp_path / "models" / "got-ocr2"
+    nested.mkdir(parents=True)
+    (nested / "got-ocr2.int8.focrq").write_bytes(b"weights")
+    assert config_ocr.model_installed() is True
+
+
+def test_model_installed_false_without_cache_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_ocr, "model_cache_dir", lambda: tmp_path / "missing")
+    assert config_ocr.model_installed() is False
+
+
+@pytest.mark.parametrize(
+    "focr,model,expected",
+    [
+        (None, False, config_ocr.STATE_MISSING),
+        (None, True, config_ocr.STATE_MISSING),
+        ("/usr/bin/focr", False, config_ocr.STATE_NO_MODEL),
+        ("/usr/bin/focr", True, config_ocr.STATE_READY),
+    ],
+)
+def test_ocr_state_matrix(monkeypatch, focr, model, expected):
+    monkeypatch.setattr(config_ocr, "find_focr", lambda: focr)
+    monkeypatch.setattr(config_ocr, "model_installed", lambda: model)
+    assert config_ocr.ocr_state() == expected
+
+
+def test_installer_command_posix(tmp_path, monkeypatch):
+    _fake_platform(monkeypatch, windows=False)
+    script = tmp_path / "install.sh"
+    assert config_ocr.installer_url() == config_ocr.INSTALL_SH_URL
+    assert config_ocr.installer_filename() == "install.sh"
+    # --no-pull: the model download is our own next step, not the installer's.
+    assert config_ocr.installer_command(script) == [
+        "bash",
+        str(script),
+        "--easy-mode",
+        "--no-pull",
+        "--no-gum",
+    ]
+
+
+def test_installer_command_windows(tmp_path, monkeypatch):
+    _fake_platform(monkeypatch, windows=True)
+    script = tmp_path / "install.ps1"
+    assert config_ocr.installer_url() == config_ocr.INSTALL_PS1_URL
+    assert config_ocr.installer_filename() == "install.ps1"
+    assert config_ocr.installer_command(script) == [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-NoPull",
+    ]
+
+
+def test_pull_command_uses_resolved_binary():
+    assert config_ocr.pull_command("/opt/focr") == ["/opt/focr", "pull"]
+
+
+def test_download_installer_writes_script(monkeypatch, tmp_path):
+    _fake_platform(monkeypatch, windows=False)
+
+    class Response:
+        content = b"#!/usr/bin/env bash\necho hi\n"
+
+        def raise_for_status(self):
+            return None
+
+    seen = {}
+
+    def fake_get(url, **kwargs):
+        seen["url"] = url
+        return Response()
+
+    monkeypatch.setattr(config_ocr.httpx, "get", fake_get)
+    path = config_ocr.download_installer(tmp_path)
+    assert seen["url"] == config_ocr.INSTALL_SH_URL
+    assert path == tmp_path / "install.sh"
+    assert path.read_bytes() == Response.content
+
+
+def test_download_installer_network_failure_is_setup_error(monkeypatch, tmp_path):
+    _fake_platform(monkeypatch, windows=False)
+
+    def boom(url, **kwargs):
+        raise config_ocr.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(config_ocr.httpx, "get", boom)
+    with pytest.raises(SetupError) as excinfo:
+        config_ocr.download_installer(tmp_path)
+    assert "internet connection" in str(excinfo.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_status_text_states(monkeypatch):
+    monkeypatch.setattr(config_ocr.shutil, "which", lambda name: "/usr/bin/focr")
+    assert "not set up yet" in config_ocr.status_text(config_ocr.STATE_MISSING, None)
+    assert "model hasn't been downloaded" in config_ocr.status_text(
+        config_ocr.STATE_NO_MODEL, "/usr/bin/focr"
+    )
+    assert config_ocr.status_text(config_ocr.STATE_READY, "/usr/bin/focr").startswith(
+        "ready"
+    )
+    # installed, but not yet on PATH in this process → say so
+    monkeypatch.setattr(config_ocr.shutil, "which", lambda name: None)
+    assert "restart your terminal" in config_ocr.status_text(
+        config_ocr.STATE_READY, "/home/u/.local/bin/focr"
+    )
+
+
+def test_hub_status_ocr_row(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    _isolate_user_claude(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_app, "ocr_state", lambda: config_ocr.STATE_MISSING)
+    monkeypatch.setattr(config_app, "find_focr", lambda: None)
+    assert hub_status(repo)["ocr"] == "not set up yet — scanned PDFs can't be read yet"
+
+
+def test_hub_status_ocr_row_survives_failure(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    _isolate_user_claude(monkeypatch, tmp_path)
+
+    def boom():
+        raise OSError("no home directory")
+
+    monkeypatch.setattr(config_app, "ocr_state", boom)
+    rows = hub_status(repo)
+    assert "couldn't check this item" in rows["ocr"]
+    assert rows["env"] == "not set up yet"  # other rows unaffected

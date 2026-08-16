@@ -70,11 +70,12 @@ uv tool update-shell
 uv run config.py
 ```
 
-This opens a small interactive setup screen (a "hub") listing three independent tasks, each showing its current state. Run one at a time, or pick **Run everything**:
+This opens a small interactive setup screen (a "hub") listing four independent tasks, each showing its current state. Run one at a time, or pick **Run everything**:
 
 1. **Caption credentials** — the Caption sign-in flow; saves the selected organization's credentials into a local `.env` file and skips anything already saved.
 2. **Sidecar naming** — choose how converted Markdown files are named: visible `contract.docx.md` (the default) or dot-prefixed `.contract.docx.md` (hidden in Finder and plain `ls`). `settings.json` selects that preferred name; `.token_index.csv` identifies the generated copy and its stored token count. After changing the setting, the next `uv run startup.py` canonicalizes an existing generated sidecar without reconversion when its authority is unambiguous. If a collision requires displacing another candidate, startup preserves it first under a collision-safe, non-sidecar name such as `contract.docx.md.conflict-preserved-<unique-id>`; byte-distinct content is never silently discarded. A candidate with no authoritative token row is preserved before startup regenerates it, or defers it when OCR approval is required. If competing indexed copies or counts make authority ambiguous, startup preserves the original candidates and rows, skips that source, and exits 1 instead of guessing.
 3. **Statusline + usage guard** — installs the status bar account-wide and hooks the opt-in usage guard up in this folder. The statusline/config/cache base contains `hooks/ccstatus.py`, the user `settings.json`, and the payload cache `ccstatus.json`. That base is a non-empty `CLAUDE_CONFIG_DIR` when set and otherwise defaults to `~/.claude`. Nothing extra to install — no Node, no internet, just Python. The bar shows context usage, model + effort + token speed, prompt-cache countdown, git branch, 5h usage, and memory; its cache lets the guard read your Claude usage. Until you install it, there is no status bar and the usage guard silently does nothing. The guard is off unless you explicitly arm it for a session; its flag expires after six hours of inactivity and may remain after a session ends until a later hook prunes it. `ScheduleWakeup` and `AskUserQuestion` remain allowed while it is armed. The repo-local hooks are written to `.claude/settings.local.json` (local to your machine, never committed), and re-running setup replaces them cleanly without duplicates. Setup validates both settings files before installing anything. It also verifies that the detected Python runs; on Windows, if no working Python is found, it asks you to type the full path instead of installing a broken command. When a repo update changes `ccstatus.py`, the setup hub shows "an updated status bar is ready to install"; installing also removes any leftover repo-local `statusLine` that would shadow the account-wide one.
+4. **Scanned-document reader (OCR)** — installs [Franken OCR](https://github.com/Dicklesworthstone/franken_ocr) (the `focr` command that `uv run startup.py --ocr` uses) by running upstream's own installer, then downloads its model (**about 4 GB**) with `focr pull`. Nothing downloads until you press the install button, and the installer's output streams into the screen so a failure is visible rather than silent. OCR runs entirely on your computer; no document leaves it. The binary goes to `~/.local/bin/focr` (macOS/Linux) or `%LOCALAPPDATA%\Programs\focr\focr.exe` (Windows) and the model to `~/.cache/franken_ocr` (macOS/Linux) or `%LOCALAPPDATA%\franken_ocr` (Windows). `startup.py` looks in those locations as well as on `PATH`, so OCR works in an already-open terminal that has not picked up the new `PATH` yet. Re-running the task is safe: an already-downloaded model is not fetched again, so a download interrupted partway can be resumed by pressing the button again.
 
 The hub also shows a notice at the top when the repo itself has updates available (it never updates automatically).
 
@@ -121,11 +122,12 @@ If PowerShell says `uv` can't be found right after it's installed, close and reo
 uv run config.py
 ```
 
-This opens the same three independent tasks as on macOS/Linux. Run one at a time, or pick **Run everything**:
+This opens the same four independent tasks as on macOS/Linux. Run one at a time, or pick **Run everything**:
 
 1. **Caption credentials** — run the Caption sign-in flow and save the selected organization's credentials into the local `.env` file.
 2. **Sidecar naming** — choose visible or dot-prefixed Markdown sidecars. `settings.json` selects the preferred name, while `.token_index.csv` identifies the generated copy/count. Unambiguous indexed collisions are canonicalized automatically. Startup preserves displaced, byte-distinct content under a collision-safe name such as `contract.docx.md.conflict-preserved-<unique-id>`, which does not end in `.md` and is not treated as a sidecar. Candidates with no authoritative row are preserved before regeneration or OCR deferral. Ambiguous authority or a failed preservation leaves the original candidates in place, skips the source, and exits 1.
 3. **Statusline + usage guard** — install the account-wide statusline and this repo's opt-in usage-guard hooks. The statusline/config/cache base contains `hooks/ccstatus.py`, the user `settings.json`, and `ccstatus.json`; it is a non-empty `CLAUDE_CONFIG_DIR` when set and otherwise defaults to `~/.claude`.
+4. **Scanned-document reader (OCR)** — install Franken OCR (`focr`) with upstream's PowerShell installer (`focr.exe` into `%LOCALAPPDATA%\Programs\focr`, added to your user `PATH`) and download its model (about 4 GB) into `%LOCALAPPDATA%\franken_ocr`. Nothing downloads until you press the install button.
 
 That's it — the same workspace, no branch switching required.
 
@@ -188,7 +190,7 @@ uv run python benchmark/bench.py anydoc benchmark
 
 The two converters produce identical worst-file lists at identical rates — the sub-1% residuals are ground-truth artifacts (text boxes/fields counted in the XML), not conversion loss. Fidelity is equal; AnyDoc is ~160× faster. Re-run with `uv run python benchmark/bench_docx.py anydoc <dir>` (the `markitdown` mode needs `markitdown[docx]`, which this repo intentionally does not install).
 
-> **About OCR:** scanned PDFs have no selectable text, so they need OCR before the AI can read them. OCR can be slow, so it does **not** run automatically. If `startup.py` reports PDFs that need it, ask before running `uv run startup.py --ocr`.
+> **About OCR:** scanned PDFs have no selectable text, so they need OCR before the AI can read them. OCR can be slow, so it does **not** run automatically. If `startup.py` reports PDFs that need it, ask before running `uv run startup.py --ocr`. OCR also needs the reader installed first — run `uv run config.py` yourself and pick **Scanned-document reader (OCR)** (about a 4 GB one-time download).
 
 > **One caution:** don't edit or replace source files while `startup.py` is running. If a file changes mid-run, its conversion is failed on purpose and retried on the next run.
 

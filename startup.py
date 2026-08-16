@@ -851,6 +851,19 @@ def convert_sources(
 _OCR_RASTER_DPI = 150
 
 
+def _focr_command() -> str:
+    """The focr executable to run: PATH first, then the directories its
+    installer uses. `uv run config.py` can install focr into ~/.local/bin
+    (or %LOCALAPPDATA%\\Programs\\focr) without that directory being on PATH
+    in an already-open terminal, and OCR should work in that session anyway.
+    Falls back to the bare name so the not-found message stays the same."""
+    try:
+        from config.ocr import find_focr
+    except Exception:
+        return "focr"
+    return find_focr() or "focr"
+
+
 def _parse_focr_batch_results(stdout: str) -> dict[str, dict[str, Any]]:
     """Parse focr ocr-batch JSON from wrapper, array, or NDJSON output."""
 
@@ -977,15 +990,15 @@ def run_ocr(
 
         try:
             proc = subprocess.run(
-                ["focr", "ocr-batch", *map(str, page_paths), "--json"],
+                [_focr_command(), "ocr-batch", *map(str, page_paths), "--json"],
                 stdout=subprocess.PIPE,
                 text=True,
             )
         except FileNotFoundError:
             return _remaining_failed(
-                "focr command not found. Install Franken OCR from "
-                "https://github.com/Dicklesworthstone/franken_ocr and make sure "
-                "`focr` is on PATH."
+                "focr command not found. Ask the user to run `uv run config.py` "
+                "and choose \"Scanned-document reader (OCR)\" to install it "
+                "(Franken OCR, https://github.com/Dicklesworthstone/franken_ocr)."
             )
         if proc.returncode != 0:
             return _remaining_failed(f"focr ocr-batch exited {proc.returncode}")
