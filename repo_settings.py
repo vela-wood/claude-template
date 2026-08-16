@@ -12,6 +12,9 @@ Known keys:
 - "sidecar_dotfiles": bool — dot-prefixed markdown sidecars
   (.foo.docx.md) instead of the default visible style (foo.docx.md).
   Default false = current behavior.
+- "ocr_int8": bool — run focr's experimental all-int8 decoder for
+  `startup.py --ocr`. Default true (~1.9x faster at 0.999 similarity);
+  false falls back to focr's conservative recipe.
 """
 
 from __future__ import annotations
@@ -69,18 +72,32 @@ def update_json_object(updates: dict, path: Path | None = None) -> dict:
     return merged
 
 
-def read_sidecar_dotfiles(path: Path | None = None) -> bool:
-    """Strict boolean read of "sidecar_dotfiles": missing → False; present
-    but non-bool ("true", 1, null) → RepoSettingsError. No truthiness
-    coercion: defaulting on a corrupted value in a dotfile-style repo would
-    trigger a silent mass rename."""
+def _read_bool(key: str, default: bool, path: Path | None) -> bool:
+    """Strict boolean read: missing → default; present but non-bool
+    ("true", 1, null) → RepoSettingsError. No truthiness coercion — a
+    typo must never quietly change how documents are converted."""
     data = load_json_object(path)
-    if "sidecar_dotfiles" not in data:
-        return False
-    value = data["sidecar_dotfiles"]
+    if key not in data:
+        return default
+    value = data[key]
     if not isinstance(value, bool):
         raise RepoSettingsError(
-            f"{_resolve(path)}: the 'sidecar_dotfiles' setting must be "
+            f"{_resolve(path)}: the '{key}' setting must be "
             f"true or false, but it is {value!r}"
         )
     return value
+
+
+def read_sidecar_dotfiles(path: Path | None = None) -> bool:
+    """Dot-prefixed sidecars? Defaulting on a corrupted value in a
+    dotfile-style repo would trigger a silent mass rename, so this read is
+    strict (see _read_bool)."""
+    return _read_bool("sidecar_dotfiles", False, path)
+
+
+def read_ocr_int8(path: Path | None = None) -> bool:
+    """Use focr's experimental all-int8 decoder for --ocr? Default true:
+    on the OCR corpus it ran ~1.9x faster than focr's conservative recipe
+    at 0.999 token similarity. Set false to fall back if a scan ever
+    transcribes worse under it."""
+    return _read_bool("ocr_int8", True, path)

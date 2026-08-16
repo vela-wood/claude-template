@@ -344,4 +344,5 @@ def repo_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["startup.py"])
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
+    monkeypatch.setattr(startup, "OCR_INT8", True)
     return tmp_path

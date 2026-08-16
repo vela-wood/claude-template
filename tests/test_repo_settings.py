@@ -64,6 +64,19 @@ def test_sidecar_dotfiles_non_bool_raises(settings_path, value):
     assert "sidecar_dotfiles" in str(excinfo.value)
 
 
+def test_ocr_int8_defaults_true_and_is_strictly_boolean(settings_path):
+    assert repo_settings.read_ocr_int8() is True
+    repo_settings.write_json_object({"other": 1})
+    assert repo_settings.read_ocr_int8() is True
+    for value in (True, False):
+        repo_settings.write_json_object({"ocr_int8": value})
+        assert repo_settings.read_ocr_int8() is value
+    settings_path.write_text(json.dumps({"ocr_int8": "false"}), encoding="utf-8")
+    with pytest.raises(RepoSettingsError) as excinfo:
+        repo_settings.read_ocr_int8()
+    assert "ocr_int8" in str(excinfo.value)
+
+
 def test_explicit_path_wins_over_module_default(settings_path, tmp_path):
     other = tmp_path / "other.json"
     other.write_text('{"sidecar_dotfiles": true}', encoding="utf-8")
