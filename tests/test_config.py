@@ -1079,10 +1079,11 @@ def test_hub_status_rows_independent_on_malformed_settings(tmp_path, monkeypatch
     (repo / "settings.json").write_text("{broken", encoding="utf-8")
     rows = hub_status(repo)
     assert set(rows) == {"env", "sidecar", "statusline", "ocr"}
-    assert "a settings file has a problem" in rows["sidecar"]
-    assert "delete settings.json and run setup again" in rows["sidecar"]
-    assert rows["env"] == "not set up yet"
-    assert rows["statusline"] == "not set up yet"
+    assert rows["sidecar"][0] == "Problem"
+    assert "a settings file has a problem" in rows["sidecar"][1]
+    assert "delete settings.json and run setup again" in rows["sidecar"][1]
+    assert rows["env"][0] == "Not set up"
+    assert rows["statusline"][0] == "Not set up"
 
 
 def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
@@ -1090,30 +1091,34 @@ def test_hub_status_statusline_lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
     user_dir = _isolate_user_claude(monkeypatch, tmp_path)
     # nothing installed → not set up
-    assert hub_status(repo)["statusline"] == "not set up yet"
+    assert hub_status(repo)["statusline"] == (
+        "Not set up",
+        "no status bar or usage guard installed yet",
+    )
     # installed and wired, but guard hooks not yet written → flagged
     install_user_statusline(repo, user_dir, "/usr/bin/python3")
     assert hub_status(repo)["statusline"] == (
-        "needs attention — the usage guard isn't hooked up in this "
-        "folder (open this item to fix)"
+        "Needs attention",
+        "the usage guard isn't hooked up in this folder (open this item to fix)",
     )
     # guard hooks installed too → ready
     local = repo / ".claude" / "settings.local.json"
     merge_guard_hooks(local, "/usr/bin/python3", repo)
     assert hub_status(repo)["statusline"] == (
-        "ready — status bar and usage guard installed, works in every folder"
+        "Ready",
+        "status bar and usage guard installed, works in every folder",
     )
     # repo script updated → prompt to reinstall
     script_source(repo).write_text("# statusline v2\n", encoding="utf-8")
-    assert (
-        hub_status(repo)["statusline"]
-        == "needs attention — an updated status bar is ready to install"
+    assert hub_status(repo)["statusline"] == (
+        "Needs attention",
+        "an updated status bar is ready to install",
     )
     # a repo-local statusLine shadows the account-wide one → flagged first
     merge_statusline_settings(local, "anything")
     assert hub_status(repo)["statusline"] == (
-        "needs attention — this folder overrides your account-wide "
-        "status bar (open this item to fix)"
+        "Needs attention",
+        "this folder overrides your account-wide status bar (open this item to fix)",
     )
 
 
@@ -1125,7 +1130,7 @@ def test_hub_status_script_copied_but_not_wired_is_not_configured(tmp_path, monk
     # statusLine replaced by something that never runs the script → the cache
     # never refreshes → not configured
     merge_statusline_settings(user_dir / "settings.json", "npx -y ccstatusline@latest")
-    assert hub_status(repo)["statusline"] == "not set up yet"
+    assert hub_status(repo)["statusline"][0] == "Not set up"
 
 
 def test_hub_status_uses_local_settings_path_for_override_and_guard(
@@ -1145,12 +1150,13 @@ def test_hub_status_uses_local_settings_path_for_override_and_guard(
     install_user_statusline(repo, user_dir, "/usr/bin/python3")
     merge_guard_hooks(custom_local, "/usr/bin/python3", repo)
     assert hub_status(repo)["statusline"] == (
-        "ready — status bar and usage guard installed, works in every folder"
+        "Ready",
+        "status bar and usage guard installed, works in every folder",
     )
     merge_statusline_settings(custom_local, "custom override")
     assert hub_status(repo)["statusline"] == (
-        "needs attention — this folder overrides your account-wide "
-        "status bar (open this item to fix)"
+        "Needs attention",
+        "this folder overrides your account-wide status bar (open this item to fix)",
     )
     assert seen == [repo, repo]
 
@@ -1309,20 +1315,18 @@ def test_download_installer_network_failure_is_setup_error(monkeypatch, tmp_path
     assert list(tmp_path.iterdir()) == []
 
 
-def test_status_text_states(monkeypatch):
+def test_status_row_states(monkeypatch):
     monkeypatch.setattr(config_ocr.shutil, "which", lambda name: "/usr/bin/focr")
-    assert "not set up yet" in config_ocr.status_text(config_ocr.STATE_MISSING, None)
-    assert "model hasn't been downloaded" in config_ocr.status_text(
-        config_ocr.STATE_NO_MODEL, "/usr/bin/focr"
-    )
-    assert config_ocr.status_text(config_ocr.STATE_READY, "/usr/bin/focr").startswith(
-        "ready"
-    )
+    assert config_ocr.status_row(config_ocr.STATE_MISSING, None)[0] == "Not set up"
+    no_model = config_ocr.status_row(config_ocr.STATE_NO_MODEL, "/usr/bin/focr")
+    assert no_model[0] == "Needs attention"
+    assert "model hasn't been downloaded" in no_model[1]
+    assert config_ocr.status_row(config_ocr.STATE_READY, "/usr/bin/focr")[0] == "Ready"
     # installed, but not yet on PATH in this process → say so
     monkeypatch.setattr(config_ocr.shutil, "which", lambda name: None)
-    assert "restart your terminal" in config_ocr.status_text(
-        config_ocr.STATE_READY, "/home/u/.local/bin/focr"
-    )
+    ready = config_ocr.status_row(config_ocr.STATE_READY, "/home/u/.local/bin/focr")
+    assert ready[0] == "Ready"
+    assert "restart your terminal" in ready[1]
 
 
 def test_hub_status_ocr_row(tmp_path, monkeypatch):
@@ -1331,7 +1335,10 @@ def test_hub_status_ocr_row(tmp_path, monkeypatch):
     _isolate_user_claude(monkeypatch, tmp_path)
     monkeypatch.setattr(config_app, "ocr_state", lambda: config_ocr.STATE_MISSING)
     monkeypatch.setattr(config_app, "find_focr", lambda: None)
-    assert hub_status(repo)["ocr"] == "not set up yet — scanned PDFs can't be read yet"
+    assert hub_status(repo)["ocr"] == (
+        "Not set up",
+        "scanned PDFs can't be read yet",
+    )
 
 
 def test_hub_status_ocr_row_survives_failure(tmp_path, monkeypatch):
@@ -1344,5 +1351,5 @@ def test_hub_status_ocr_row_survives_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_app, "ocr_state", boom)
     rows = hub_status(repo)
-    assert "couldn't check this item" in rows["ocr"]
-    assert rows["env"] == "not set up yet"  # other rows unaffected
+    assert "couldn't check this item" in rows["ocr"][1]
+    assert rows["env"][0] == "Not set up"  # other rows unaffected

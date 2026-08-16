@@ -181,19 +181,20 @@ def download_installer(dest_dir: Path, *, timeout: float = 30.0) -> Path:
     return path
 
 
-def status_text(state: str, focr: str | None) -> str:
-    """The hub row for this task."""
+def status_row(state: str, focr: str | None) -> tuple[str, str]:
+    """The hub row for this task, as (status, detail) columns."""
     if state == STATE_MISSING:
-        return "not set up yet — scanned PDFs can't be read yet"
+        return "Not set up", "scanned PDFs can't be read yet"
     if state == STATE_NO_MODEL:
         return (
-            "needs attention — the reader is installed but its "
-            f"{MODEL_DOWNLOAD_SIZE} model hasn't been downloaded yet"
+            "Needs attention",
+            "the reader is installed but its "
+            f"{MODEL_DOWNLOAD_SIZE} model hasn't been downloaded yet",
         )
     on_path = shutil.which(binary_name()) is not None
     if not on_path:
         return (
-            f"ready — installed at {focr} (restart your terminal to use "
-            "`focr` directly)"
+            "Ready",
+            f"installed at {focr} (restart your terminal to use `focr` directly)",
         )
-    return "ready — scanned PDFs can be read"
+    return "Ready", "scanned PDFs can be read"

@@ -68,7 +68,7 @@ from .ocr import (
     model_installed,
     ocr_state,
     pull_command,
-    status_text,
+    status_row,
 )
 from .statusline import (
     build_statusline_command,
@@ -91,6 +91,13 @@ TASK_LABELS = {
     "statusline": "Status bar & usage meter",
     "ocr": "Scanned-document reader (OCR)",
 }
+
+# Status column vocabulary. Kept to a few short phrases so the column stays
+# narrow and scannable; anything specific belongs in the detail column.
+STATUS_READY = "Ready"
+STATUS_ATTENTION = "Needs attention"
+STATUS_MISSING = "Not set up"
+STATUS_PROBLEM = "Problem"
 
 
 # ---------------------------------------------------------------------------
@@ -159,31 +166,36 @@ async def count_commits_behind(repo_root: Path) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def hub_status(repo_root: Path) -> dict[str, str]:
-    """One status string per task; a per-row exception becomes that row's
-    text so the other rows keep working."""
-    rows: dict[str, str] = {}
+def hub_status(repo_root: Path) -> dict[str, tuple[str, str]]:
+    """One (status, detail) pair per task — the hub's two right-hand
+    columns. A per-row exception becomes that row's text so the other rows
+    keep working."""
+    rows: dict[str, tuple[str, str]] = {}
     try:
         values = read_existing_env_values(Path(repo_root) / ".env")
         noun = "credential" if len(values) == 1 else "credentials"
         rows["env"] = (
-            f"ready ({len(values)} {noun} saved)" if values else "not set up yet"
+            (STATUS_READY, f"{len(values)} {noun} saved")
+            if values
+            else (STATUS_MISSING, "sign in to save your Caption credentials")
         )
     except Exception as exc:
         rows["env"] = (
+            STATUS_PROBLEM,
             "couldn't read your saved credentials — open this item to "
-            f"re-enter them ({exc})"
+            f"re-enter them ({exc})",
         )
     try:
         rows["sidecar"] = (
-            "copies are hidden (.contract.docx.md)"
+            ("Hidden", "copies are named .contract.docx.md")
             if repo_settings.read_sidecar_dotfiles()
-            else "copies are visible (contract.docx.md)"
+            else ("Visible", "copies are named contract.docx.md")
         )
     except Exception as exc:
         rows["sidecar"] = (
+            STATUS_PROBLEM,
             "a settings file has a problem — ask for help, or delete "
-            f"settings.json and run setup again ({exc})"
+            f"settings.json and run setup again ({exc})",
         )
     try:
         local_path = local_settings_path(Path(repo_root))
@@ -193,32 +205,38 @@ def hub_status(repo_root: Path) -> dict[str, str]:
         )
         local_override = statusline_settings(local_path) is not None
         if state == "missing" or not wired:
-            rows["statusline"] = "not set up yet"
+            rows["statusline"] = (
+                STATUS_MISSING,
+                "no status bar or usage guard installed yet",
+            )
         elif local_override:
             rows["statusline"] = (
-                "needs attention — this folder overrides your account-wide "
-                "status bar (open this item to fix)"
+                STATUS_ATTENTION,
+                "this folder overrides your account-wide status bar (open "
+                "this item to fix)",
             )
         elif state == "outdated":
             rows["statusline"] = (
-                "needs attention — an updated status bar is ready to install"
+                STATUS_ATTENTION,
+                "an updated status bar is ready to install",
             )
         elif not guard_hooks_present(local_path):
             rows["statusline"] = (
-                "needs attention — the usage guard isn't hooked up in this "
-                "folder (open this item to fix)"
+                STATUS_ATTENTION,
+                "the usage guard isn't hooked up in this folder (open this "
+                "item to fix)",
             )
         else:
             rows["statusline"] = (
-                "ready — status bar and usage guard installed, works in "
-                "every folder"
+                STATUS_READY,
+                "status bar and usage guard installed, works in every folder",
             )
     except Exception as exc:
-        rows["statusline"] = f"couldn't check this item ({exc})"
+        rows["statusline"] = (STATUS_PROBLEM, f"couldn't check this item ({exc})")
     try:
-        rows["ocr"] = status_text(ocr_state(), find_focr())
+        rows["ocr"] = status_row(ocr_state(), find_focr())
     except Exception as exc:
-        rows["ocr"] = f"couldn't check this item ({exc})"
+        rows["ocr"] = (STATUS_PROBLEM, f"couldn't check this item ({exc})")
     return rows
 
 
@@ -259,6 +277,8 @@ def install_statusline_and_guard(python3: str) -> bool:
 # Textual TUI (human-only; agents must never run this)
 # ---------------------------------------------------------------------------
 
+from rich.table import Table  # noqa: E402
+from rich.text import Text  # noqa: E402
 from textual import on, work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.containers import Horizontal, Vertical  # noqa: E402
@@ -269,6 +289,7 @@ from textual.widgets import (  # noqa: E402
     Footer,
     Header,
     Input,
+    Link,
     LoadingIndicator,
     OptionList,
     RadioButton,
@@ -331,18 +352,77 @@ class TaskScreen(_DismissOnce, Screen[ScreenResultType]):
 class HubScreen(_DismissOnce, Screen[str]):
     """Result: task id ("env" | "sidecar" | "statusline") | "all" | "done"."""
 
+    # The box fills the terminal (a small centered dialog wastes the space
+    # the detail column wants). #rows takes 1fr so the list stretches and
+    # the buttons stay pinned at the bottom.
     CSS = """
-    #hub { width: 90; }
+    HubScreen #hub { width: 100%; height: 100%; max-width: 140; }
     #banner { color: $warning; margin-bottom: 1; }
-    #rows { height: auto; margin-bottom: 1; }
+    #intro { margin-bottom: 1; }
+    /* Padding matches the option list's own border + padding, so the
+       headings sit exactly over their columns. */
+    #headings { padding: 0 2; }
+    #rows { height: 1fr; margin-bottom: 1; }
+    /* The default cursor is solid gold, which swallows the colored status
+       words; a tinted row keeps them readable focused or not. */
+    #rows > .option-list--option-highlighted { background: $primary 15%; }
+    #rows:focus > .option-list--option-highlighted {
+        background: $primary 30%;
+        color: $foreground;
+        text-style: bold;
+    }
     #buttons { height: auto; }
     """
     BINDINGS = [("escape", "done", "Close")]
 
-    def __init__(self, rows: dict[str, str], update_notice: str) -> None:
+    # Widths of the two fixed columns: the longest task label and the
+    # longest status phrase, each plus breathing room.
+    LABEL_WIDTH = max(len(label) for label in TASK_LABELS.values()) + 2
+    STATUS_WIDTH = (
+        max(
+            len(status)
+            for status in (
+                STATUS_READY,
+                STATUS_ATTENTION,
+                STATUS_MISSING,
+                STATUS_PROBLEM,
+            )
+        )
+        + 2
+    )
+
+    def __init__(self, rows: dict[str, tuple[str, str]], update_notice: str) -> None:
         super().__init__()
         self._rows = rows
         self._update_notice = update_notice
+
+    def _grid(self, label: Text, status: Text, detail: Text) -> Table:
+        """One three-column row. A Rich grid (rather than padded strings)
+        keeps a long detail wrapping inside its own column."""
+        grid = Table.grid(expand=True)
+        grid.add_column(width=self.LABEL_WIDTH, no_wrap=True)
+        grid.add_column(width=self.STATUS_WIDTH, no_wrap=True)
+        grid.add_column(ratio=1)
+        grid.add_row(label, status, detail)
+        return grid
+
+    def _status_style(self, status: str) -> str:
+        if status == STATUS_READY:
+            return BRAND_THEME.success
+        if status in (STATUS_ATTENTION, STATUS_PROBLEM):
+            return BRAND_THEME.error
+        return BRAND_THEME.secondary
+
+    def _option(self, key: str) -> Option:
+        status, detail = self._rows.get(key, ("Checking…", ""))
+        return Option(
+            self._grid(
+                Text(TASK_LABELS[key], style="bold"),
+                Text(status, style=self._status_style(status)),
+                Text(detail),
+            ),
+            id=key,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -350,24 +430,28 @@ class HubScreen(_DismissOnce, Screen[str]):
             banner = Static(self._update_notice, id="banner")
             banner.display = bool(self._update_notice)
             yield banner
-            yield Static("Use ↑/↓ and Enter to open an item, or set up everything at once:")
-            yield OptionList(
-                *(
-                    Option(
-                        f"{TASK_LABELS[key]} — {self._rows.get(key, 'checking…')}",
-                        id=key,
-                    )
-                    for key in TASK_ORDER
-                ),
-                id="rows",
+            yield Static(
+                "Use ↑/↓ and Enter to open an item, or set up everything at once:",
+                id="intro",
             )
+            yield Static(
+                self._grid(
+                    Text("Item", style="dim bold"),
+                    Text("Status", style="dim bold"),
+                    Text("What this means", style="dim bold"),
+                ),
+                id="headings",
+            )
+            yield OptionList(*(self._option(key) for key in TASK_ORDER), id="rows")
             with Horizontal(id="buttons"):
                 yield Button("Set up everything", id="all", variant="primary")
                 yield Button("Close", id="done")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#all", Button).focus()
+        # Focus the list, not the button: ↑/↓ and Enter work on arrival,
+        # exactly as the line above the table says. Tab reaches the buttons.
+        self.query_one("#rows", OptionList).focus()
 
     def show_banner(self, notice: str) -> None:
         banner = self.query_one("#banner", Static)
@@ -392,6 +476,8 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
 
     CSS = """
     #box { width: 90; }
+    #setup-link { margin-left: 3; }
+    #link-hint { margin: 0 0 1 3; color: $text-muted; }
     #loading { height: 1; }
     """
 
@@ -400,8 +486,23 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
         with Vertical(id="box"):
             yield Static(
                 "Connect this toolkit to your Caption account:\n\n"
-                f"1. Open this link in your browser: {SETUP_PAGE_URL}\n"
-                "   (hold Cmd and click, or copy and paste it into your browser)\n"
+                "1. Open the setup page in your browser:"
+            )
+            # A Link opens the URL on a plain click (Textual reads mouse
+            # events itself, so no Cmd/Ctrl needed) and on Enter when
+            # focused. The address stays visible for copy and paste, which
+            # is the fallback if the browser doesn't open.
+            yield Link(
+                SETUP_PAGE_URL,
+                url=SETUP_PAGE_URL,
+                tooltip="Opens this page in your web browser",
+                id="setup-link",
+            )
+            yield Static(
+                "(click the link, or copy and paste it into your browser)",
+                id="link-hint",
+            )
+            yield Static(
                 "2. Sign in if asked, then copy the setup code shown.\n"
                 "3. Paste the code below and press Submit."
             )
@@ -414,6 +515,11 @@ class TokenScreen(TaskScreen["Mapping[str, object] | None"]):
                 yield Button("Submit", id="submit", variant="primary")
                 yield Button("Cancel", id="cancel")
         yield Footer()
+
+    def on_mount(self) -> None:
+        # The link is focusable and composes first; keep the code box the
+        # landing spot so pasting works straight away.
+        self.query_one("#token", Input).focus()
 
     def _set_busy(self, busy: bool) -> None:
         self.query_one("#loading", LoadingIndicator).display = busy
