@@ -73,8 +73,8 @@ uv run config.py
 This opens a small interactive setup screen (a "hub") listing three independent tasks, each showing its current state. Run one at a time, or pick **Run everything**:
 
 1. **Caption credentials** — the Caption sign-in flow; saves the selected organization's credentials into a local `.env` file and skips anything already saved.
-2. **Sidecar naming** — choose how converted Markdown files are named: visible `contract.docx.md` (the default) or dot-prefixed `.contract.docx.md` (hidden in Finder and plain `ls`). After changing this, the next `uv run startup.py` renames existing converted files to the chosen style automatically. If both styles of the same file somehow exist, startup keeps the one matching your setting and warns you to delete the other — it never deletes either file itself.
-3. **Statusline + usage cache** — installs the status bar account-wide: the setup copies this repo's `ccstatus.py` to `~/.claude/hooks/` and points the `statusLine` command in your user-level `~/.claude/settings.json` at it, so it works in every folder, not just this repo. Nothing extra to install — no Node, no internet, just Python. The bar shows context usage, model + effort + token speed, prompt-cache countdown, git branch, 5h usage, and memory; the same script also keeps a small usage cache up to date so the optional usage guard can read your Claude usage. Until you install it, there is no status bar and the usage guard silently does nothing. The same task also hooks the usage guard up in this folder, writing its hooks into `.claude/settings.local.json` (local to your machine, never committed) — re-running setup replaces those hooks cleanly, without duplicates. Setup verifies that the Python it detected actually runs before installing anything; on Windows, if no working Python is found, it asks you to type the full path instead of installing a broken command. When a repo update changes `ccstatus.py`, the setup hub shows "an updated status bar is ready to install"; installing also removes any leftover repo-local statusLine that would shadow the account-wide one.
+2. **Sidecar naming** — choose how converted Markdown files are named: visible `contract.docx.md` (the default) or dot-prefixed `.contract.docx.md` (hidden in Finder and plain `ls`). `settings.json` selects that preferred name; `.token_index.csv` identifies the generated copy and its stored token count. After changing the setting, the next `uv run startup.py` canonicalizes an existing generated sidecar without reconversion when its authority is unambiguous. If a collision requires displacing another candidate, startup preserves it first under a collision-safe, non-sidecar name such as `contract.docx.md.conflict-preserved-<unique-id>`; byte-distinct content is never silently discarded. A candidate with no authoritative token row is preserved before startup regenerates it, or defers it when OCR approval is required. If competing indexed copies or counts make authority ambiguous, startup preserves the original candidates and rows, skips that source, and exits 1 instead of guessing.
+3. **Statusline + usage guard** — installs the status bar account-wide and hooks the opt-in usage guard up in this folder. The statusline/config/cache base contains `hooks/ccstatus.py`, the user `settings.json`, and the payload cache `ccstatus.json`. That base is a non-empty `CLAUDE_CONFIG_DIR` when set and otherwise defaults to `~/.claude`. Nothing extra to install — no Node, no internet, just Python. The bar shows context usage, model + effort + token speed, prompt-cache countdown, git branch, 5h usage, and memory; its cache lets the guard read your Claude usage. Until you install it, there is no status bar and the usage guard silently does nothing. The guard is off unless you explicitly arm it for a session; its flag expires after six hours of inactivity and may remain after a session ends until a later hook prunes it. `ScheduleWakeup` and `AskUserQuestion` remain allowed while it is armed. The repo-local hooks are written to `.claude/settings.local.json` (local to your machine, never committed), and re-running setup replaces them cleanly without duplicates. Setup validates both settings files before installing anything. It also verifies that the detected Python runs; on Windows, if no working Python is found, it asks you to type the full path instead of installing a broken command. When a repo update changes `ccstatus.py`, the setup hub shows "an updated status bar is ready to install"; installing also removes any leftover repo-local `statusLine` that would shadow the account-wide one.
 
 The hub also shows a notice at the top when the repo itself has updates available (it never updates automatically).
 
@@ -115,11 +115,17 @@ The installer is **interactive and cautious**: it shows you each command and its
 
 If PowerShell says `uv` can't be found right after it's installed, close and reopen PowerShell (or run `uv tool update-shell`), then run the installer again — it will skip the steps that are already done.
 
-**3. (Optional) Connect Caption and NetDocs credentials:**
+**3. Run the setup hub:**
 
 ```powershell
 uv run config.py
 ```
+
+This opens the same three independent tasks as on macOS/Linux. Run one at a time, or pick **Run everything**:
+
+1. **Caption credentials** — run the Caption sign-in flow and save the selected organization's credentials into the local `.env` file.
+2. **Sidecar naming** — choose visible or dot-prefixed Markdown sidecars. `settings.json` selects the preferred name, while `.token_index.csv` identifies the generated copy/count. Unambiguous indexed collisions are canonicalized automatically. Startup preserves displaced, byte-distinct content under a collision-safe name such as `contract.docx.md.conflict-preserved-<unique-id>`, which does not end in `.md` and is not treated as a sidecar. Candidates with no authoritative row are preserved before regeneration or OCR deferral. Ambiguous authority or a failed preservation leaves the original candidates in place, skips the source, and exits 1.
+3. **Statusline + usage guard** — install the account-wide statusline and this repo's opt-in usage-guard hooks. The statusline/config/cache base contains `hooks/ccstatus.py`, the user `settings.json`, and `ccstatus.json`; it is a non-empty `CLAUDE_CONFIG_DIR` when set and otherwise defaults to `~/.claude`.
 
 That's it — the same workspace, no branch switching required.
 
@@ -138,7 +144,7 @@ uv run startup.py
 
 `startup.py` prepares your files. It:
 
-- converts `.pdf`, `.docx`, and supported email files into matching `.md` (Markdown) files next to them — for example, `contract.pdf` becomes `contract.pdf.md` (or `.contract.pdf.md` if you chose the dot-prefixed style in setup; startup migrates existing files between styles automatically and warns — without deleting anything — if both styles of the same file exist);
+- converts `.pdf`, `.docx`, and supported email files into matching `.md` (Markdown) files next to them — for example, `contract.pdf` becomes `contract.pdf.md` (or `.contract.pdf.md` if you chose the dot-prefixed style in setup); startup canonicalizes indexed naming collisions only when the generated copy/count is unambiguous, preserves displaced bytes under a collision-safe name that is not treated as a sidecar, and preserves and reports ambiguous conflicts instead of guessing;
 - keeps `.hash_index.csv` so it knows which source files have changed;
 - keeps `.token_index.csv` with the size (token count) of each converted file;
 - creates and clears the `caption_cache/` folder for Caption output;
@@ -223,8 +229,7 @@ To check for drift without changing files, run:
 uv run sync_skills.py --check
 ```
 
-GitHub Actions runs the same check on macOS, Linux, and Windows. Do not edit
-`.agents/skills/` directly; the next sync replaces it.
+Do not edit `.agents/skills/` directly; the next sync replaces it.
 
 The Claude-only `/share` skill is intentionally not copied. It requires Claude Code's
 `CLAUDE_CODE_SESSION_ID`, for which Codex has no documented repository interface.

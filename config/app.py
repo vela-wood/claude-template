@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -33,6 +35,7 @@ from .common import (
     USER_CLAUDE_DIR,
     USER_SETTINGS_PATH,
     SetupError,
+    local_settings_path,
 )
 from .env import (
     SETUP_PAGE_URL,
@@ -44,13 +47,20 @@ from .env import (
     summarize_env_write,
     write_env_file,
 )
-from .guard import guard_hooks_present, merge_guard_hooks
+from .guard import (
+    commit_guard_hooks,
+    guard_hooks_present,
+    merge_guard_hooks,
+    prepare_guard_hooks,
+)
 from .statusline import (
     build_statusline_command,
+    commit_user_statusline,
     detect_python3,
     install_state,
     install_user_statusline,
     installed_script,
+    prepare_user_statusline,
     remove_local_statusline,
     statusline_settings,
     uses_installed_script,
@@ -158,16 +168,12 @@ def hub_status(repo_root: Path) -> dict[str, str]:
             f"settings.json and run setup again ({exc})"
         )
     try:
+        local_path = local_settings_path(Path(repo_root))
         state = install_state(Path(repo_root), USER_CLAUDE_DIR)
         wired = uses_installed_script(
             statusline_settings(USER_SETTINGS_PATH), USER_CLAUDE_DIR
         )
-        local_override = (
-            statusline_settings(
-                Path(repo_root) / ".claude" / "settings.local.json"
-            )
-            is not None
-        )
+        local_override = statusline_settings(local_path) is not None
         if state == "missing" or not wired:
             rows["statusline"] = "not set up yet"
         elif local_override:
@@ -179,9 +185,7 @@ def hub_status(repo_root: Path) -> dict[str, str]:
             rows["statusline"] = (
                 "needs attention — an updated status bar is ready to install"
             )
-        elif not guard_hooks_present(
-            Path(repo_root) / ".claude" / "settings.local.json"
-        ):
+        elif not guard_hooks_present(local_path):
             rows["statusline"] = (
                 "needs attention — the usage guard isn't hooked up in this "
                 "folder (open this item to fix)"
@@ -194,6 +198,45 @@ def hub_status(repo_root: Path) -> dict[str, str]:
     except Exception as exc:
         rows["statusline"] = f"couldn't check this item ({exc})"
     return rows
+
+
+def install_statusline_and_guard(
+    python3: str,
+    *,
+    platform: str = sys.platform,
+) -> bool:
+    """Validate both settings files, then install them in commit order.
+
+    The return value reports only whether a repo-local statusLine override
+    was removed.
+    """
+    statusline_prepared = prepare_user_statusline(
+        REPO_ROOT,
+        USER_CLAUDE_DIR,
+        python3,
+        platform=platform,
+        settings_path=USER_SETTINGS_PATH,
+    )
+    guard_prepared = prepare_guard_hooks(
+        LOCAL_SETTINGS_PATH,
+        python3,
+        REPO_ROOT,
+        platform=platform,
+    )
+
+    local_settings = dict(guard_prepared.settings)
+    removed_local_override = "statusLine" in local_settings
+    if removed_local_override:
+        del local_settings["statusLine"]
+    guard_prepared = replace(
+        guard_prepared,
+        settings=local_settings,
+        changed=guard_prepared.changed or removed_local_override,
+    )
+
+    commit_user_statusline(statusline_prepared)
+    commit_guard_hooks(guard_prepared)
+    return removed_local_override
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +772,7 @@ class SetupApp(App[int]):
         )
         if python3 is None:
             return
-        install_user_statusline(REPO_ROOT, USER_CLAUDE_DIR, python3)
-        # Before remove_local_statusline: a malformed settings.local.json
-        # raises SetupError here and aborts before any local rewrite.
-        merge_guard_hooks(LOCAL_SETTINGS_PATH, python3, REPO_ROOT)
-        removed = remove_local_statusline(LOCAL_SETTINGS_PATH)
+        removed = install_statusline_and_guard(python3)
         message = (
             "Status bar installed account-wide, and the usage guard is "
             "hooked up in this folder."

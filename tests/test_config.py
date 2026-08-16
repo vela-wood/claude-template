@@ -2,17 +2,32 @@
 
 import asyncio
 import json
-import shutil
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import fsio
 import repo_settings
 from config import app as config_app
+from config import common as config_common
+from config import guard as config_guard
 from config import statusline as config_statusline
-from config.app import count_commits_behind, hub_status, upstream_ref
-from config.common import SetupError
+from config.app import (
+    count_commits_behind,
+    hub_status,
+    install_statusline_and_guard,
+    upstream_ref,
+)
+from config.common import (
+    SetupError,
+    local_settings_path,
+    quote_for_platform,
+    user_claude_dir,
+    write_settings,
+)
 from config.guard import (
     build_guard_hook_commands,
     guard_hooks_present,
@@ -37,12 +52,104 @@ from config.statusline import (
     script_source,
     uses_installed_script,
     validate_python,
-    _quote_for_platform,
 )
 
 
 # ---------------------------------------------------------------------------
-# build_statusline_command / _quote_for_platform
+# Shared paths, settings writes, and command quoting
+# ---------------------------------------------------------------------------
+
+
+def test_local_settings_path():
+    assert local_settings_path(Path("/repo")) == Path(
+        "/repo/.claude/settings.local.json"
+    )
+
+
+def test_user_claude_dir_uses_nonempty_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/.claude-custom")
+    assert user_claude_dir() == tmp_path / "home" / ".claude-custom"
+
+
+@pytest.mark.parametrize("override", [None, ""])
+def test_user_claude_dir_defaults_to_home(monkeypatch, tmp_path, override):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    if override is None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", override)
+    assert user_claude_dir() == tmp_path / "home" / ".claude"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_suffix"),
+    [
+        ("~/.claude-fresh", ".claude-fresh"),
+        ("", ".claude"),
+        (None, ".claude"),
+    ],
+)
+def test_fresh_import_constants_honor_claude_config_dir(
+    tmp_path, override, expected_suffix
+):
+    home = tmp_path / "controlled-home"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    if override is None:
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = override
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; from config import common; "
+                "print(json.dumps([str(common.USER_CLAUDE_DIR), "
+                "str(common.USER_SETTINGS_PATH), "
+                "str(common.LOCAL_SETTINGS_PATH)]))"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    user_dir, user_settings, local_settings = json.loads(result.stdout)
+    expected_user_dir = home / expected_suffix
+    assert Path(user_dir) == expected_user_dir
+    assert Path(user_settings) == expected_user_dir / "settings.json"
+    assert Path(local_settings) == local_settings_path(config_common.REPO_ROOT)
+
+
+def test_write_settings_creates_parent_atomically_without_temp_residue(tmp_path):
+    path = tmp_path / "nested" / "settings.json"
+    write_settings(path, {"answer": 42})
+    assert path.read_text(encoding="utf-8") == '{\n  "answer": 42\n}\n'
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_write_settings_replace_failure_preserves_original_and_cleans_temp(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "settings.json"
+    original = b'{"original":true}\r\n'
+    path.write_bytes(original)
+
+    def fail_replace(source, target):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(fsio.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        write_settings(path, {"replacement": True})
+    assert path.read_bytes() == original
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# build_statusline_command / quote_for_platform
 # ---------------------------------------------------------------------------
 
 
@@ -77,9 +184,9 @@ def test_build_command_windows_double_quotes():
 
 
 def test_quote_for_platform():
-    assert _quote_for_platform("plain", "linux") == "plain"
-    assert _quote_for_platform("has space", "linux") == "'has space'"
-    assert _quote_for_platform("has space", "win32") == '"has space"'
+    assert quote_for_platform("plain", "linux") == "plain"
+    assert quote_for_platform("has space", "linux") == "'has space'"
+    assert quote_for_platform("has space", "win32") == '"has space"'
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +325,26 @@ def test_install_user_statusline_copies_and_wires(tmp_path):
     )
 
 
+def test_install_user_statusline_uses_explicit_settings_path(tmp_path):
+    repo = _fake_repo(tmp_path)
+    user_dir = tmp_path / "user-config"
+    explicit_settings = tmp_path / "separate-target" / "settings.json"
+
+    command = install_user_statusline(
+        repo,
+        user_dir,
+        "/usr/bin/python3",
+        platform="linux",
+        settings_path=explicit_settings,
+    )
+
+    assert statusline_settings(explicit_settings) == command
+    assert not (user_dir / "settings.json").exists()
+    assert installed_script(user_dir).read_text(encoding="utf-8") == (
+        "# statusline v1\n"
+    )
+
+
 def test_install_user_statusline_missing_source(tmp_path):
     with pytest.raises(SetupError):
         install_user_statusline(
@@ -234,6 +361,7 @@ def test_install_user_statusline_never_clobbers_malformed_settings(tmp_path):
     with pytest.raises(SetupError):
         install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
     assert settings.read_text(encoding="utf-8") == "{broken"
+    assert not installed_script(user_dir).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +692,245 @@ def test_guard_hooks_present_truth_table(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Coordinated statusline + guard installer
+# ---------------------------------------------------------------------------
+
+
+def _isolate_install_globals(monkeypatch, tmp_path, *, repo_name="repo"):
+    """Patch every app path global, including intentionally divergent paths."""
+    repo = tmp_path / repo_name
+    repo.mkdir()
+    script_source(repo).write_text("# isolated statusline\n", encoding="utf-8")
+    local_settings = tmp_path / "local-target" / "settings.local.json"
+    user_dir = tmp_path / "user-config"
+    user_settings = tmp_path / "user-target" / "settings.json"
+    monkeypatch.setattr(config_app, "REPO_ROOT", repo)
+    monkeypatch.setattr(config_app, "LOCAL_SETTINGS_PATH", local_settings)
+    monkeypatch.setattr(config_app, "USER_CLAUDE_DIR", user_dir)
+    monkeypatch.setattr(config_app, "USER_SETTINGS_PATH", user_settings)
+    return repo, local_settings, user_dir, user_settings
+
+
+@pytest.mark.parametrize("user_content", ["{broken", "[1]"])
+def test_coordinated_installer_user_preflight_aborts_before_every_write(
+    tmp_path, monkeypatch, user_content
+):
+    repo, local_settings, user_dir, user_settings = _isolate_install_globals(
+        monkeypatch, tmp_path
+    )
+    user_settings.parent.mkdir(parents=True)
+    user_settings.write_bytes(user_content.encode("utf-8"))
+    local_settings.parent.mkdir(parents=True)
+    local_original = b'{"local":"untouched"}\r\n'
+    local_settings.write_bytes(local_original)
+
+    with pytest.raises(SetupError):
+        install_statusline_and_guard("/usr/bin/python3", platform="linux")
+
+    assert user_settings.read_bytes() == user_content.encode("utf-8")
+    assert local_settings.read_bytes() == local_original
+    assert not installed_script(user_dir).exists()
+    assert script_source(repo).read_text(encoding="utf-8") == "# isolated statusline\n"
+
+
+@pytest.mark.parametrize(
+    "local_content",
+    [
+        "{broken",
+        "[1]",
+        '{"hooks":"nope"}',
+        '{"hooks":{"PreToolUse":{}}}',
+        '{"hooks":{"SessionStart":{}}}',
+    ],
+)
+def test_coordinated_installer_local_preflight_aborts_before_every_write(
+    tmp_path, monkeypatch, local_content
+):
+    _, local_settings, user_dir, user_settings = _isolate_install_globals(
+        monkeypatch, tmp_path
+    )
+    user_settings.parent.mkdir(parents=True)
+    user_original = b'{"user":"untouched"}\r\n'
+    user_settings.write_bytes(user_original)
+    local_settings.parent.mkdir(parents=True)
+    local_original = local_content.encode("utf-8")
+    local_settings.write_bytes(local_original)
+
+    with pytest.raises(SetupError):
+        install_statusline_and_guard("/usr/bin/python3", platform="linux")
+
+    assert user_settings.read_bytes() == user_original
+    assert local_settings.read_bytes() == local_original
+    assert not installed_script(user_dir).exists()
+
+
+def test_coordinated_installer_fresh_success_returns_false(tmp_path, monkeypatch):
+    repo, local_settings, user_dir, user_settings = _isolate_install_globals(
+        monkeypatch, tmp_path
+    )
+
+    assert install_statusline_and_guard("/usr/bin/python3", platform="linux") is False
+
+    assert installed_script(user_dir).read_bytes() == script_source(repo).read_bytes()
+    assert statusline_settings(user_settings) == (
+        f"/usr/bin/python3 {installed_script(user_dir)}"
+    )
+    assert not (user_dir / "settings.json").exists()
+    assert guard_hooks_present(local_settings)
+
+
+def test_coordinated_installer_reports_removed_local_override(tmp_path, monkeypatch):
+    _, local_settings, _, _ = _isolate_install_globals(monkeypatch, tmp_path)
+    local_settings.parent.mkdir(parents=True)
+    local_settings.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["X"]},
+                "statusLine": {"type": "command", "command": "old"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert install_statusline_and_guard("/usr/bin/python3", platform="linux") is True
+
+    data = json.loads(local_settings.read_text(encoding="utf-8"))
+    assert "statusLine" not in data
+    assert data["permissions"] == {"allow": ["X"]}
+    assert guard_hooks_present(local_settings)
+
+
+def test_coordinated_installer_forwards_win32_to_both_builders(
+    tmp_path, monkeypatch
+):
+    _, local_settings, _, user_settings = _isolate_install_globals(
+        monkeypatch, tmp_path, repo_name="repo with spaces"
+    )
+    calls = []
+    real_status_builder = config_statusline.build_statusline_command
+    real_guard_builder = config_guard.build_guard_hook_commands
+
+    def status_builder(python3, script_path, *, platform=sys.platform):
+        calls.append(("statusline", platform))
+        return real_status_builder(python3, script_path, platform=platform)
+
+    def guard_builder(python3, repo_root, *, platform=sys.platform):
+        calls.append(("guard", platform))
+        return real_guard_builder(python3, repo_root, platform=platform)
+
+    monkeypatch.setattr(config_statusline, "build_statusline_command", status_builder)
+    monkeypatch.setattr(config_guard, "build_guard_hook_commands", guard_builder)
+    install_statusline_and_guard(
+        r"C:\Program Files\Python\python.exe", platform="win32"
+    )
+
+    assert calls == [("statusline", "win32"), ("guard", "win32")]
+    assert statusline_settings(user_settings).startswith(
+        '"C:\\Program Files\\Python\\python.exe" '
+    )
+    local_data = json.loads(local_settings.read_text(encoding="utf-8"))
+    guard_commands = [
+        hook["command"]
+        for event in ("PreToolUse", "SessionStart")
+        for entry in local_data["hooks"][event]
+        for hook in entry["hooks"]
+    ]
+    assert all(
+        '"C:\\Program Files\\Python\\python.exe"' in command
+        for command in guard_commands
+    )
+
+
+def test_coordinated_installer_prepares_both_files_before_copy_and_never_reloads(
+    tmp_path, monkeypatch
+):
+    _, local_settings, _, user_settings = _isolate_install_globals(
+        monkeypatch, tmp_path
+    )
+    local_settings.parent.mkdir(parents=True)
+    local_settings.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["X"]},
+                "statusLine": {"type": "command", "command": "old"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = []
+    real_status_prepare = config_app.prepare_user_statusline
+    real_guard_prepare = config_app.prepare_guard_hooks
+    real_replace = config_app.replace
+    real_status_load = config_statusline.load_settings_or_raise
+    real_guard_load = config_guard.load_settings_or_raise
+    real_copyfile = config_statusline.shutil.copyfile
+    real_status_write = config_statusline.write_settings
+    real_guard_write = config_guard.write_settings
+
+    def status_prepare(*args, **kwargs):
+        events.append("status-prepare-start")
+        result = real_status_prepare(*args, **kwargs)
+        events.append(("status-prepare-end", result.settings_changed))
+        return result
+
+    def guard_prepare(*args, **kwargs):
+        events.append("guard-prepare-start")
+        result = real_guard_prepare(*args, **kwargs)
+        events.append("guard-prepare-end")
+        return result
+
+    def finalize_local(prepared, **changes):
+        assert "statusLine" not in changes["settings"]
+        assert changes["changed"] is True
+        events.append(("local-finalized", changes["changed"]))
+        return real_replace(prepared, **changes)
+
+    def status_load(path):
+        events.append(("settings-load", Path(path)))
+        return real_status_load(path)
+
+    def guard_load(path):
+        events.append(("settings-load", Path(path)))
+        return real_guard_load(path)
+
+    def copyfile(*args, **kwargs):
+        events.append("script-copy")
+        return real_copyfile(*args, **kwargs)
+
+    def status_write(path, data):
+        events.append(("settings-write", Path(path)))
+        return real_status_write(path, data)
+
+    def guard_write(path, data):
+        events.append(("settings-write", Path(path)))
+        return real_guard_write(path, data)
+
+    monkeypatch.setattr(config_app, "prepare_user_statusline", status_prepare)
+    monkeypatch.setattr(config_app, "prepare_guard_hooks", guard_prepare)
+    monkeypatch.setattr(config_app, "replace", finalize_local)
+    monkeypatch.setattr(config_statusline, "load_settings_or_raise", status_load)
+    monkeypatch.setattr(config_guard, "load_settings_or_raise", guard_load)
+    monkeypatch.setattr(config_statusline.shutil, "copyfile", copyfile)
+    monkeypatch.setattr(config_statusline, "write_settings", status_write)
+    monkeypatch.setattr(config_guard, "write_settings", guard_write)
+
+    install_statusline_and_guard("/usr/bin/python3", platform="linux")
+
+    assert events == [
+        "status-prepare-start",
+        ("settings-load", user_settings),
+        ("status-prepare-end", True),
+        "guard-prepare-start",
+        ("settings-load", local_settings),
+        "guard-prepare-end",
+        ("local-finalized", True),
+        "script-copy",
+        ("settings-write", user_settings),
+        ("settings-write", local_settings),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Update check (subprocess monkeypatched)
 # ---------------------------------------------------------------------------
 
@@ -710,3 +1077,30 @@ def test_hub_status_script_copied_but_not_wired_is_not_configured(tmp_path, monk
     # never refreshes → not configured
     merge_statusline_settings(user_dir / "settings.json", "npx -y ccstatusline@latest")
     assert hub_status(repo)["statusline"] == "not set up yet"
+
+
+def test_hub_status_uses_local_settings_path_for_override_and_guard(
+    tmp_path, monkeypatch
+):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", repo / "settings.json")
+    user_dir = _isolate_user_claude(monkeypatch, tmp_path)
+    custom_local = tmp_path / "elsewhere" / "settings.local.json"
+    seen = []
+
+    def custom_local_path(repo_root):
+        seen.append(Path(repo_root))
+        return custom_local
+
+    monkeypatch.setattr(config_app, "local_settings_path", custom_local_path)
+    install_user_statusline(repo, user_dir, "/usr/bin/python3", platform="linux")
+    merge_guard_hooks(custom_local, "/usr/bin/python3", repo, platform="linux")
+    assert hub_status(repo)["statusline"] == (
+        "ready — status bar and usage guard installed, works in every folder"
+    )
+    merge_statusline_settings(custom_local, "custom override")
+    assert hub_status(repo)["statusline"] == (
+        "needs attention — this folder overrides your account-wide "
+        "status bar (open this item to fix)"
+    )
+    assert seen == [repo, repo]

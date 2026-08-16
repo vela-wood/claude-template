@@ -15,10 +15,14 @@
 - Always cite specific documents/sections when possible.
 - Explain your reasoning at a professional level, like you would to a colleague.
 - Never overwrite a file unless directly instructed, default to adding e + date (YYYYMMDD) to any file you revise, e.g., `test.docx.md` -> `test_e20260110.docx.md`
+- Include hidden converted files when discovering document sidecars. Use the recursive,
+  zsh-safe command `rg --files --hidden -g '*.docx.md'`; do not rely on paired `ls`
+  globs. `ls -a` displays dotfiles, but it does not make ordinary globs match them.
+  Add `--no-ignore` only when the search must also include other ignored files.
 
 ## 3. Startup procedure
 
-Unless working on a pure coding task, run the below first. A pure coding task is involves changes to the code inside this repo. Make sure any edits to the repo support both mac and windows users.
+Unless working on a pure coding task, run the below first. A pure coding task involves changes to the code inside this repo. Make sure any edits to the repo support both mac and windows users.
 
 1. **Convert files to markdown**
    - Use `uv run startup.py` 
@@ -38,6 +42,17 @@ Then proceed to the main task.
 ### 4.2 startup.py (for documents)
 
 `startup.py` converts office documents and emails to Markdown sidecars named `<original-filename>.<extension>.md` — or, when the repo-root `settings.json` (user-local, distinct from `.claude/settings.json`) sets `"sidecar_dotfiles": true` (a strict JSON boolean), dot-prefixed `.<original-filename>.<extension>.md` — and maintains indexes for the working folder:
+
+`settings.json` selects the preferred sidecar name, while `.token_index.csv`
+identifies which existing sidecar and stored token count were generated. Startup
+automatically resolves a naming collision only when one generated copy/count is
+unambiguous and every required preservation and canonicalization step succeeds. If
+authority remains ambiguous, startup preserves the original candidates and their
+rows, skips further processing for that source, and exits 1. When no candidate has
+an authoritative token row, startup preserves unique candidate bytes under
+collision-safe, non-sidecar backup names and regenerates the sidecar, or defers a PDF
+that needs OCR, when hashing and every preservation step succeed. If they do not,
+startup leaves the original candidates in place, skips the source, and exits 1.
 
 | Input | Converter | Notes |
 |---|---|---|
@@ -119,11 +134,15 @@ If a file is directly referenced with @, read the entire file in the main thread
    - Use command-line tools to:
      - Enumerate files in the current folder and subfolders.
      - Search for key parties, dates, or issues.
+   - For converted Word sidecars, use the recursive, zsh-safe command
+     `rg --files --hidden -g '*.docx.md'`. Do not use paired `ls` globs: `ls -a`
+     displays dotfiles but does not make ordinary globs match them. Add `--no-ignore`
+     only when the search must also include other ignored files.
 
 2. **Narrow down candidates**
    - Examine filenames and other metadata
    - Prefer newer drafts over older versions.
-   - If multiple plausible candidates exist, state your selection criteria and ask the user for xonfirmation.
+   - If multiple plausible candidates exist, state your selection criteria and ask the user for confirmation.
 
 3. **Reading process**
    - Always spawn Explore subagents when inspecting files

@@ -8,10 +8,15 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from .common import SetupError
-from .statusline import _load_settings_or_raise, _quote_for_platform
+from .common import (
+    SetupError,
+    load_settings_or_raise,
+    quote_for_platform,
+    write_settings,
+)
 
 GUARD_SCRIPT_FILENAME = "usage_guard.py"
 GUARD_MATCHERS = {"PreToolUse": "*", "SessionStart": "startup|clear"}
@@ -38,8 +43,8 @@ def build_guard_hook_commands(
     never pay an interpreter start per tool call."""
     script = Path(repo_root) / GUARD_SCRIPT_FILENAME
     ccguard = Path(repo_root) / ".ccguard"
-    q_python = _quote_for_platform(python3, platform)
-    q_script = _quote_for_platform(str(script), platform)
+    q_python = quote_for_platform(python3, platform)
+    q_script = quote_for_platform(script, platform)
     if platform == "win32":
         # Hand-built dir token: cmd has no backslash escaping inside quotes,
         # and the trailing \ makes `if exist` a directory test. list2cmdline
@@ -47,7 +52,7 @@ def build_guard_hook_commands(
         dir_token = '"' + str(ccguard) + '\\"'
         pretooluse = f"if exist {dir_token} {q_python} {q_script} --hook-json"
     else:
-        q_ccguard = _quote_for_platform(str(ccguard), platform)
+        q_ccguard = quote_for_platform(ccguard, platform)
         pretooluse = f"[ ! -d {q_ccguard} ] || {q_python} {q_script} --hook-json"
     return {
         "PreToolUse": pretooluse,
@@ -55,18 +60,25 @@ def build_guard_hook_commands(
     }
 
 
-def merge_guard_hooks(
+@dataclass(frozen=True)
+class PreparedGuardHooks:
+    """Validated final guard settings ready for an atomic commit."""
+
+    path: Path
+    settings: dict
+    changed: bool
+
+
+def prepare_guard_hooks(
     path: Path,
     python3: str,
     repo_root: Path,
     *,
     platform: str = sys.platform,
-) -> bool:
-    """Install/replace our guard hooks in a Claude settings file, preserving
-    every other key and any foreign hooks (even ones sharing our matcher
-    entry). Returns False when already identical (skip). Malformed JSON or
-    unexpected hooks structure → SetupError; never clobber."""
-    data = _load_settings_or_raise(path)
+) -> PreparedGuardHooks:
+    """Validate and merge guard hooks in memory without writing anything."""
+    path = Path(path)
+    data = load_settings_or_raise(path)
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         raise SetupError(
@@ -102,11 +114,26 @@ def merge_guard_hooks(
         hooks[event] = entries
     data["hooks"] = hooks
 
-    if data == snapshot:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return PreparedGuardHooks(path=path, settings=data, changed=data != snapshot)
+
+
+def commit_guard_hooks(prepared: PreparedGuardHooks) -> None:
+    """Commit an already-validated guard preparation without rereading."""
+    if prepared.changed:
+        write_settings(prepared.path, prepared.settings)
+
+
+def merge_guard_hooks(
+    path: Path,
+    python3: str,
+    repo_root: Path,
+    *,
+    platform: str = sys.platform,
+) -> bool:
+    """Install or replace guard hooks, preserving unrelated settings."""
+    prepared = prepare_guard_hooks(path, python3, repo_root, platform=platform)
+    commit_guard_hooks(prepared)
+    return prepared.changed
 
 
 def guard_hooks_present(path: Path) -> bool:

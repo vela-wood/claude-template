@@ -2,28 +2,81 @@
 """Statusline: cache rate-limit payloads, then render one ANSI line.
 
 This file is the in-repo source. `uv run config.py` installs a copy to
-~/.claude/hooks/ccstatus.py and points the statusLine command in the
-user-level ~/.claude/settings.json at it, so the statusline and usage
-cache work account-wide, in every folder. Nothing statusline-related
-lives in the repo's .claude/.
+the ``hooks`` directory below ``$CLAUDE_CONFIG_DIR`` when that non-empty
+override is set, or below ``~/.claude`` otherwise. The user-level settings
+file in that same directory points the statusLine command at the copy, so
+the statusline and usage cache work account-wide, in every folder. Nothing
+statusline-related lives in the repo's .claude/.
 
-Caches the verbatim stdin bytes to ~/legal/ccstatus.json first, so hooks
-(which never receive rate_limits) can read usage percentages — freshness
-is the file's mtime — then prints one stdlib-built statusline: context
-bar, model + effort + total speed, cache timer + cached tokens, git
-branch, 5h usage, free memory. Every segment is individually fail-safe;
-a missing field just drops that segment. Arguments are ignored (older
-installs passed --render). Exits 0 always; a malformed payload never
-tracebacks.
+Caches the verbatim stdin bytes to ``ccstatus.json`` in that configuration
+directory first, so hooks (which never receive rate_limits) can read usage
+percentages — freshness is the file's mtime. macOS memory readings use a
+30-second ``ccstatus.mem`` cache in the same directory. The script then
+prints one stdlib-built statusline: context bar, model + effort + total
+speed, cache timer + cached tokens, git branch, 5h usage, free memory.
+Every segment is individually fail-safe; a missing field just drops that
+segment. Arguments are ignored (older installs passed --render). Exits 0
+always; a malformed payload never tracebacks.
 """
+import ctypes
 import json
 import os
 import sys
 import tempfile
 import time
 
-CACHE = os.path.expanduser("~/legal/ccstatus.json")
+
+def _config_dir() -> str:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    if configured:
+        return os.path.expanduser(configured)
+    return os.path.expanduser("~/.claude")
+
+
+CACHE = os.path.join(_config_dir(), "ccstatus.json")
+MEMORY_CACHE = os.path.join(_config_dir(), "ccstatus.mem")
 THROTTLE_SECONDS = 10
+MEMORY_CACHE_TTL_SECONDS = 30
+
+
+def _atomic_write_bytes(path: str, data: bytes) -> None:
+    """Atomically replace *path* after writing every byte of *data*."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd = None
+    tmp = None
+    raw = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=parent, prefix=".ccstatus-")
+        raw = os.fdopen(fd, "wb", buffering=0)
+        fd = None
+        remaining = memoryview(data)
+        while remaining:
+            written = raw.write(remaining)
+            if written is None or written <= 0 or written > len(remaining):
+                raise OSError("atomic byte write made no progress")
+            remaining = remaining[written:]
+        raw.close()
+        raw = None
+        os.replace(tmp, path)
+        tmp = None
+    except BaseException:
+        if raw is not None:
+            try:
+                raw.close()
+            except BaseException:
+                pass
+        elif fd is not None:
+            try:
+                os.close(fd)
+            except BaseException:
+                pass
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except BaseException:
+                pass
+        raise
 
 
 def write_cache(data: bytes) -> None:
@@ -38,14 +91,7 @@ def write_cache(data: bytes) -> None:
                 return
         except OSError:
             pass
-        cache_dir = os.path.dirname(CACHE)
-        os.makedirs(cache_dir, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix=".ccstatus-")
-        try:
-            os.write(fd, data)
-        finally:
-            os.close(fd)
-        os.replace(tmp, CACHE)
+        _atomic_write_bytes(CACHE, data)
     except Exception:
         pass
 
@@ -254,6 +300,117 @@ def _seg_extra_usage(payload: dict) -> "str | None":
     return None
 
 
+def _valid_memory_usage(used, total) -> bool:
+    return (
+        type(used) is int
+        and type(total) is int
+        and total > 0
+        and 0 <= used <= total
+    )
+
+
+def _macos_vm_stat() -> "tuple[int, int] | None":
+    """Return validated used and total physical bytes from ``vm_stat``."""
+    import re
+    import subprocess
+
+    result = subprocess.run(
+        ["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=1
+    )
+    if result.returncode != 0:
+        return None
+    page_match = re.search(r"page size of (\d+) bytes", result.stdout)
+    if page_match is None:
+        return None
+    page_size = int(page_match.group(1))
+    pages = {
+        match.group(1): int(match.group(2))
+        for match in re.finditer(
+            r"^(Pages[^:]*):\s+(\d+)\.", result.stdout, re.MULTILINE
+        )
+    }
+    used = page_size * (
+        pages.get("Pages active", 0)
+        + pages.get("Pages wired down", 0)
+        + pages.get("Pages occupied by compressor", 0)
+    )
+    total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    if not _valid_memory_usage(used, total):
+        return None
+    return used, total
+
+
+def _read_memory_cache() -> "tuple[int, int] | None":
+    try:
+        with open(MEMORY_CACHE, encoding="utf-8") as fh:
+            age = time.time() - os.fstat(fh.fileno()).st_mtime
+            if age < 0 or age >= MEMORY_CACHE_TTL_SECONDS:
+                return None
+            cached = json.load(fh)
+        if not isinstance(cached, dict):
+            return None
+        used = cached.get("used_bytes")
+        total = cached.get("total_bytes")
+        if not _valid_memory_usage(used, total):
+            return None
+        return used, total
+    except Exception:
+        return None
+
+
+def _write_memory_cache(used: int, total: int) -> None:
+    data = json.dumps(
+        {"used_bytes": used, "total_bytes": total}, separators=(",", ":")
+    ).encode("utf-8")
+    _atomic_write_bytes(MEMORY_CACHE, data)
+
+
+def _macos_memory_usage() -> "tuple[int, int] | None":
+    cached = _read_memory_cache()
+    if cached is not None:
+        return cached
+    current = _macos_vm_stat()
+    if current is None:
+        return None
+    try:
+        _write_memory_cache(*current)
+    except Exception:
+        pass
+    return current
+
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32),
+        ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+
+
+def _windows_memory_usage() -> "tuple[int, int] | None":
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    try:
+        succeeded = ctypes.windll.kernel32.GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        )
+    except Exception:
+        return None
+    if not succeeded:
+        return None
+    total = int(status.ullTotalPhys)
+    used = total - int(status.ullAvailPhys)
+    if not _valid_memory_usage(used, total):
+        return None
+    return used, total
+
+
 def _seg_free_memory() -> "str | None":
     fmt = lambda b: f"{b / 2**30:.1f}G"  # noqa: E731
     if sys.platform.startswith("linux"):
@@ -264,23 +421,16 @@ def _seg_free_memory() -> "str | None":
                 info[key] = int(rest.strip().split()[0]) * 1024
         return _c(94, f"{fmt(info['MemTotal'] - info['MemAvailable'])}/{fmt(info['MemTotal'])}")
     if sys.platform == "darwin":
-        import re
-        import subprocess
-
-        out = subprocess.run(
-            ["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=1
-        ).stdout
-        page = int(re.search(r"page size of (\d+) bytes", out).group(1))
-        pages = dict(
-            (m.group(1), int(m.group(2)))
-            for m in re.finditer(r"^(Pages[^:]*):\s+(\d+)\.", out, re.MULTILINE)
-        )
-        used = page * (
-            pages.get("Pages active", 0)
-            + pages.get("Pages wired down", 0)
-            + pages.get("Pages occupied by compressor", 0)
-        )
-        total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        memory = _macos_memory_usage()
+        if memory is None:
+            return None
+        used, total = memory
+        return _c(94, f"{fmt(used)}/{fmt(total)}")
+    if sys.platform == "win32":
+        memory = _windows_memory_usage()
+        if memory is None:
+            return None
+        used, total = memory
         return _c(94, f"{fmt(used)}/{fmt(total)}")
     return None
 
@@ -324,6 +474,10 @@ def render_line(data: bytes) -> str:
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     data = sys.stdin.buffer.read()
     write_cache(data)
     try:

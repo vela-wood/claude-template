@@ -333,16 +333,8 @@ def _payload_from_response(response: httpx.Response) -> Mapping[str, object]:
     return cleaned_payload
 
 
-def fetch_setup_payload(auth_token: str) -> Mapping[str, object]:
-    headers = {"Authorization": f"Bearer {auth_token}"}
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(SETUP_API_URL, headers=headers)
-    return _payload_from_response(response)
-
-
 async def fetch_setup_payload_async(auth_token: str) -> Mapping[str, object]:
-    """Async twin of fetch_setup_payload for @work async workers (textual
-    cancels them for real; thread workers would wait out the timeout)."""
+    """Fetch setup data in a cancellable Textual ``@work`` async worker."""
     headers = {"Authorization": f"Bearer {auth_token}"}
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(SETUP_API_URL, headers=headers)

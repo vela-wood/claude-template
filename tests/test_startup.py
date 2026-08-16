@@ -405,6 +405,37 @@ def test_pending_ocr_without_flag_is_deferred_exit_zero(repo_tmp, monkeypatch, c
     assert read_csv_dict(repo_tmp / ".hash_index.csv") == []  # not certified
 
 
+def test_unresolved_scanned_pdf_conflict_is_excluded_from_every_route(
+    repo_tmp, monkeypatch, capsys
+):
+    import sys
+
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    preferred = repo_tmp / "scan.pdf.md"
+    alternate = repo_tmp / ".scan.pdf.md"
+    preferred.write_bytes(b"first indexed OCR artifact")
+    alternate.write_bytes(b"second indexed OCR artifact")
+    write_token_map(repo_tmp, {"scan.pdf.md": 1, ".scan.pdf.md": 2})
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("unresolved PDF conflict reached processing")
+
+    monkeypatch.setattr(startup, "classify_pdf", should_not_run)
+    monkeypatch.setattr(startup, "run_ocr", should_not_run)
+    monkeypatch.setattr(startup, "convert_to_markdown", should_not_run)
+    monkeypatch.setattr(startup, "count_tokens", should_not_run)
+
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "scan.pdf.md and .scan.pdf.md" in out
+    assert preferred.read_bytes() == b"first indexed OCR artifact"
+    assert alternate.read_bytes() == b"second indexed OCR artifact"
+    assert token_map(repo_tmp) == {"scan.pdf.md": 1, ".scan.pdf.md": 2}
+    assert read_csv_dict(repo_tmp / ".ocr_index.csv") == []
+    assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
+
+
 def test_requested_ocr_success_certifies_exactly_once(repo_tmp, monkeypatch, capsys):
     import sys
 
@@ -464,6 +495,35 @@ def test_requested_ocr_failure_is_nonzero_and_never_falls_through(
     assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
 
 
+def test_authorized_ocr_failure_keeps_preserved_unindexed_backup(
+    repo_tmp, monkeypatch
+):
+    import sys
+
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    unindexed = repo_tmp / "scan.pdf.md"
+    unindexed.write_bytes(b"preserve before failed OCR")
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+
+    def fake_focr_fail(cmd, **kwargs):
+        class Proc:
+            returncode = 7
+            stdout = ""
+
+        return Proc()
+
+    monkeypatch.setattr(startup.subprocess, "run", fake_focr_fail)
+    assert run_main() == 1
+    backups = preserved_backups(repo_tmp, "scan.pdf.md")
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"preserve before failed OCR"
+    assert not unindexed.exists()
+    assert read_csv_dict(repo_tmp / ".token_index.csv") == []
+    assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
+    ocr_rows = read_csv_dict(repo_tmp / ".ocr_index.csv")
+    assert len(ocr_rows) == 1 and ocr_rows[0]["ocr_done"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Empty tree / reconciliation persistence
 # ---------------------------------------------------------------------------
@@ -495,13 +555,29 @@ def test_empty_tree_prunes_indexes_and_keeps_sidecars(repo_tmp, capsys):
     assert orphan.read_text(encoding="utf-8") == "keep me"
 
 
+def test_deleted_source_removes_both_candidate_token_rows(repo_tmp):
+    write_token_map(repo_tmp, {"gone.eml.md": 1, ".gone.eml.md": 2})
+    (repo_tmp / ".hash_index.csv").write_text(
+        "file,hash\ngone.eml,deadbeef\n", encoding="utf-8"
+    )
+    (repo_tmp / "gone.eml.md").write_bytes(b"orphan preferred")
+    (repo_tmp / ".gone.eml.md").write_bytes(b"orphan alternate")
+
+    assert run_main() == 0
+    assert read_csv_dict(repo_tmp / ".token_index.csv") == []
+
+
 def test_index_write_failure_exits_nonzero(repo_tmp, monkeypatch, capsys):
     write_eml(repo_tmp / "a.eml")
 
-    def boom(root, index):
-        raise OSError("injected index write failure")
+    original = startup.atomic_write_text
 
-    monkeypatch.setattr(startup, "save_hash_index", boom)
+    def targeted_write(path, text, newline=""):
+        if path.name == startup.HASH_INDEX_FILENAME:
+            raise OSError("injected index write failure")
+        return original(path, text, newline=newline)
+
+    monkeypatch.setattr(startup, "atomic_write_text", targeted_write)
     assert run_main() == 1
     assert "writing .hash_index.csv failed" in capsys.readouterr().out
     # token index was still written before the failing hash write
@@ -517,30 +593,159 @@ def test_token_write_failure_withholds_certification_marker(repo_tmp, monkeypatc
     assert run_main() == 0
     prior_hash_bytes = (repo_tmp / ".hash_index.csv").read_bytes()
 
-    def boom(root, index):
-        raise OSError("injected token write failure")
+    original = startup.atomic_write_text
+    writes = []
+    ocr_serializations = 0
+    original_ocr_serializer = startup.serialize_ocr_index
 
-    monkeypatch.setattr(startup, "save_token_index", boom)
+    def targeted_write(path, text, newline=""):
+        writes.append(path.name)
+        if path.name == startup.TOKEN_INDEX_FILENAME:
+            raise OSError("injected token write failure")
+        return original(path, text, newline=newline)
+
+    def hash_should_not_serialize(index):
+        raise AssertionError("hash index serialized after an earlier write failure")
+
+    def count_ocr_serialization(index):
+        nonlocal ocr_serializations
+        ocr_serializations += 1
+        return original_ocr_serializer(index)
+
+    monkeypatch.setattr(startup, "atomic_write_text", targeted_write)
+    monkeypatch.setattr(startup, "serialize_hash_index", hash_should_not_serialize)
+    monkeypatch.setattr(startup, "serialize_ocr_index", count_ocr_serialization)
     errors = startup.persist_indexes(
-        repo_tmp, {"a.eml": "0badf00d"}, {"a.eml.md": 999}, {}
+        repo_tmp,
+        {"a.eml": "0badf00d"},
+        {"a.eml.md": 999},
+        {
+            "doc.pdf": {
+                "file": "doc.pdf",
+                "hash": "beef",
+                "verdict": "digital-text",
+            }
+        },
     )
     # hash index NOT updated: previous certification marker left untouched
     assert (repo_tmp / ".hash_index.csv").read_bytes() == prior_hash_bytes
     joined = " | ".join(errors)
     assert "writing .token_index.csv failed" in joined
     assert "withheld .hash_index.csv write" in joined
+    assert writes == [startup.TOKEN_INDEX_FILENAME, startup.OCR_INDEX_FILENAME]
+    assert ocr_serializations == 1
+    assert not list(repo_tmp.glob(".*.tmp"))
 
 
-@pytest.mark.parametrize("which", ["save_token_index", "save_ocr_index"])
-def test_each_index_write_failure_is_reported(repo_tmp, monkeypatch, capsys, which):
+@pytest.mark.parametrize(
+    "failed_name", [startup.TOKEN_INDEX_FILENAME, startup.OCR_INDEX_FILENAME]
+)
+def test_each_index_write_failure_is_reported(
+    repo_tmp, monkeypatch, capsys, failed_name
+):
     write_eml(repo_tmp / "a.eml")
 
-    def boom(root, index):
-        raise OSError("injected")
+    original = startup.atomic_write_text
 
-    monkeypatch.setattr(startup, which, boom)
+    def targeted_write(path, text, newline=""):
+        if path.name == failed_name:
+            raise OSError("injected")
+        return original(path, text, newline=newline)
+
+    monkeypatch.setattr(startup, "atomic_write_text", targeted_write)
     assert run_main() == 1
     assert "failed" in capsys.readouterr().out
+
+
+def test_ocr_write_failure_withholds_hash_without_serializing_it(
+    repo_tmp, monkeypatch
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    prior_hash = (repo_tmp / startup.HASH_INDEX_FILENAME).read_bytes()
+    current_tokens = token_map(repo_tmp)
+    original_write = startup.atomic_write_text
+    writes = []
+
+    def fail_ocr_write(path, text, newline=""):
+        writes.append(path.name)
+        if path.name == startup.OCR_INDEX_FILENAME:
+            raise OSError("injected OCR-index failure")
+        return original_write(path, text, newline=newline)
+
+    def hash_should_not_serialize(index):
+        raise AssertionError("hash serialized after OCR-index failure")
+
+    monkeypatch.setattr(startup, "atomic_write_text", fail_ocr_write)
+    monkeypatch.setattr(startup, "serialize_hash_index", hash_should_not_serialize)
+    errors = startup.persist_indexes(
+        repo_tmp,
+        {"a.eml": "newhash"},
+        current_tokens,
+        {
+            "doc.pdf": {
+                "file": "doc.pdf",
+                "hash": "beef",
+                "verdict": "digital-text",
+            }
+        },
+    )
+
+    assert (repo_tmp / startup.HASH_INDEX_FILENAME).read_bytes() == prior_hash
+    assert writes == [startup.OCR_INDEX_FILENAME]
+    assert any("writing .ocr_index.csv failed" in error for error in errors)
+    assert any("withheld .hash_index.csv write" in error for error in errors)
+
+
+def test_persist_indexes_serializes_each_index_exactly_once(
+    repo_tmp, monkeypatch
+):
+    calls = {"token": 0, "ocr": 0, "hash": 0}
+    writes = []
+    original_token = startup.serialize_token_index
+    original_ocr = startup.serialize_ocr_index
+    original_hash = startup.serialize_hash_index
+    original_write = startup.atomic_write_text
+
+    def count_token(index):
+        calls["token"] += 1
+        return original_token(index)
+
+    def count_ocr(index):
+        calls["ocr"] += 1
+        return original_ocr(index)
+
+    def count_hash(index):
+        calls["hash"] += 1
+        return original_hash(index)
+
+    def record_write(path, text, newline=""):
+        writes.append(path.name)
+        return original_write(path, text, newline=newline)
+
+    monkeypatch.setattr(startup, "serialize_token_index", count_token)
+    monkeypatch.setattr(startup, "serialize_ocr_index", count_ocr)
+    monkeypatch.setattr(startup, "serialize_hash_index", count_hash)
+    monkeypatch.setattr(startup, "atomic_write_text", record_write)
+
+    assert startup.persist_indexes(
+        repo_tmp, {"a.eml": "deadbeef"}, {"a.eml.md": 3}, {}
+    ) == []
+    assert calls == {"token": 1, "ocr": 1, "hash": 1}
+    assert writes == [
+        startup.TOKEN_INDEX_FILENAME,
+        startup.OCR_INDEX_FILENAME,
+        startup.HASH_INDEX_FILENAME,
+    ]
+
+
+def test_shared_index_serializer_preserves_headers_sorting_and_newlines():
+    assert startup._serialize_index({"b": 2, "a": 1}, "tokens") == (
+        "file,tokens\r\na,1\r\nb,2\r\n"
+    )
+    assert startup.serialize_hash_index({"b": "bb", "a": "aa"}) == (
+        "file,hash\r\na,aa\r\nb,bb\r\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +788,17 @@ def test_sidecar_naming_for_sigcheck(repo_tmp, monkeypatch):
         startup.other_style_path(repo_tmp / "x.mbx")
 
 
+def test_sidecar_helper_and_wrappers_read_setting_at_call_time(repo_tmp, monkeypatch):
+    source = repo_tmp / "x.docx"
+    assert startup._sidecar_path(source, dotted=False).name == "x.docx.md"
+    assert startup._sidecar_path(source, dotted=True).name == ".x.docx.md"
+
+    monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
+    assert startup.converted_path(source).name == "x.docx.md"
+    monkeypatch.setattr(startup, "SIDECAR_DOTFILES", True)
+    assert startup.converted_path(source).name == ".x.docx.md"
+
+
 def test_caption_cache_cleared_each_run(repo_tmp):
     cache = repo_tmp / "caption_cache"
     cache.mkdir()
@@ -622,6 +838,23 @@ def set_dotfiles(repo_tmp, value: bool) -> None:
     )
 
 
+def token_map(repo_tmp) -> dict[str, int]:
+    return {
+        row["file"]: int(row["tokens"])
+        for row in read_csv_dict(repo_tmp / ".token_index.csv")
+    }
+
+
+def write_token_map(repo_tmp, rows: dict[str, int]) -> None:
+    (repo_tmp / ".token_index.csv").write_text(
+        startup.serialize_token_index(rows), encoding="utf-8"
+    )
+
+
+def preserved_backups(repo_tmp, sidecar_name: str) -> list[Path]:
+    return sorted(repo_tmp.glob(f"{sidecar_name}.conflict-preserved-*"))
+
+
 def test_flip_preference_renames_and_stays_certified(repo_tmp, monkeypatch, capsys):
     write_eml(repo_tmp / "a.eml")
     assert run_main() == 0
@@ -631,6 +864,11 @@ def test_flip_preference_renames_and_stays_certified(repo_tmp, monkeypatch, caps
     set_dotfiles(repo_tmp, True)
     calls = []
     monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("must trust stored count")),
+    )
     assert run_main() == 0
     out = capsys.readouterr().out
     assert "1 renamed" in out
@@ -650,19 +888,59 @@ def test_flip_preference_renames_and_stays_certified(repo_tmp, monkeypatch, caps
     assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"a.eml.md"}
 
 
-def test_both_styles_is_conflict_nothing_deleted(repo_tmp, capsys):
+def test_both_styles_different_with_one_authoritative_row_preserves_unindexed(
+    repo_tmp, monkeypatch, capsys
+):
     write_eml(repo_tmp / "a.eml")
     assert run_main() == 0
     capsys.readouterr()
     (repo_tmp / ".a.eml.md").write_text("stale dotfile copy", encoding="utf-8")
     current = (repo_tmp / "a.eml.md").read_bytes()
+    write_eml(repo_tmp / "a.eml", subject="changed source must still wait")
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("resolved authority must skip processing this run")
+
+    monkeypatch.setattr(startup, "convert_to_markdown", should_not_run)
+    monkeypatch.setattr(startup, "count_tokens", should_not_run)
+    monkeypatch.setattr(startup, "run_ocr", should_not_run)
 
     assert run_main() == 0
     out = capsys.readouterr().out
-    assert "both sidecar styles exist for a.eml" in out
-    assert "1 conflict(s)" in out
+    assert "1 automatically resolved conflict(s)" in out
     assert (repo_tmp / "a.eml.md").read_bytes() == current
-    assert (repo_tmp / ".a.eml.md").read_text(encoding="utf-8") == "stale dotfile copy"
+    assert not (repo_tmp / ".a.eml.md").exists()
+    backups = preserved_backups(repo_tmp, ".a.eml.md")
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "stale dotfile copy"
+    assert not backups[0].name.endswith(".md")
+    assert set(token_map(repo_tmp)) == {"a.eml.md"}
+
+
+def test_both_different_alternate_authority_is_canonicalized_without_processing(
+    repo_tmp, monkeypatch
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    authoritative = (repo_tmp / "a.eml.md").read_bytes()
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    set_dotfiles(repo_tmp, True)
+    (repo_tmp / ".a.eml.md").write_bytes(b"unindexed preferred bytes")
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("resolved authority must skip processing this run")
+
+    monkeypatch.setattr(startup, "convert_to_markdown", should_not_run)
+    monkeypatch.setattr(startup, "count_tokens", should_not_run)
+    monkeypatch.setattr(startup, "run_ocr", should_not_run)
+
+    assert run_main() == 0
+    assert not (repo_tmp / "a.eml.md").exists()
+    assert (repo_tmp / ".a.eml.md").read_bytes() == authoritative
+    assert token_map(repo_tmp) == {".a.eml.md": stored_count}
+    backups = preserved_backups(repo_tmp, ".a.eml.md")
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"unindexed preferred bytes"
 
 
 def test_crash_window_repair_rewrites_key_without_reconversion(
@@ -679,12 +957,457 @@ def test_crash_window_repair_rewrites_key_without_reconversion(
 
     calls = []
     monkeypatch.setattr(startup, "convert_to_markdown", lambda s: calls.append(s) or "x")
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("must trust stored count")),
+    )
     assert run_main() == 0
     out = capsys.readouterr().out
     assert "1 repaired" in out
     assert "0 converted, 1 unchanged" in out
     assert calls == []
     assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {".a.eml.md"}
+
+
+def test_inverse_crash_shape_preserves_then_regenerates(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    original = (repo_tmp / "a.eml.md").read_bytes()
+    set_dotfiles(repo_tmp, True)
+    old_count = token_map(repo_tmp)["a.eml.md"]
+    write_token_map(repo_tmp, {".a.eml.md": old_count})
+    conversions = []
+    original_convert = startup.convert_to_markdown
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: conversions.append(source) or original_convert(source),
+    )
+
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert conversions == [repo_tmp / "a.eml"]
+    assert "1 converted" in out
+    assert (repo_tmp / ".a.eml.md").exists()
+    assert not (repo_tmp / "a.eml.md").exists()
+    backups = preserved_backups(repo_tmp, "a.eml.md")
+    assert len(backups) == 1 and backups[0].read_bytes() == original
+    assert set(token_map(repo_tmp)) == {".a.eml.md"}
+
+
+def test_inverse_regeneration_token_write_failure_cannot_stale_certify(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    capsys.readouterr()
+    prior_hash = (repo_tmp / ".hash_index.csv").read_bytes()
+    original_sidecar = (repo_tmp / "a.eml.md").read_bytes()
+    set_dotfiles(repo_tmp, True)
+    write_token_map(repo_tmp, {".a.eml.md": 999})
+    original_write = startup.atomic_write_text
+
+    def fail_token_write(path, text, newline=""):
+        if path.name == startup.TOKEN_INDEX_FILENAME:
+            raise OSError("injected token persistence failure")
+        return original_write(path, text, newline=newline)
+
+    monkeypatch.setattr(startup, "atomic_write_text", fail_token_write)
+    assert run_main() == 1
+    assert "withheld .hash_index.csv write" in capsys.readouterr().out
+    # The regenerated output stayed staged and was discarded. The stale row
+    # therefore cannot name a physical preferred sidecar on the next run.
+    assert not (repo_tmp / ".a.eml.md").exists()
+    assert not (repo_tmp / "a.eml.md").exists()
+    backups = preserved_backups(repo_tmp, "a.eml.md")
+    assert len(backups) == 1 and backups[0].read_bytes() == original_sidecar
+    assert token_map(repo_tmp) == {".a.eml.md": 999}
+    assert (repo_tmp / ".hash_index.csv").read_bytes() == prior_hash
+    assert not list(repo_tmp.glob(".*.tmp"))
+
+    monkeypatch.setattr(startup, "atomic_write_text", original_write)
+    conversions = []
+    original_convert = startup.convert_to_markdown
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: conversions.append(source) or original_convert(source),
+    )
+    assert run_main() == 0
+    assert conversions == [repo_tmp / "a.eml"]
+    assert (repo_tmp / ".a.eml.md").exists()
+    assert token_map(repo_tmp)[".a.eml.md"] != 999
+
+
+def test_single_unindexed_sidecar_preserved_before_conversion(
+    repo_tmp, monkeypatch
+):
+    source = write_eml(repo_tmp / "a.eml")
+    unindexed = repo_tmp / "a.eml.md"
+    unindexed.write_bytes(b"user bytes that must survive")
+    original_convert = startup.convert_to_markdown
+    saw_backup = []
+
+    def convert(path):
+        backups = preserved_backups(repo_tmp, "a.eml.md")
+        assert not unindexed.exists()
+        assert len(backups) == 1
+        saw_backup.append(backups[0].read_bytes())
+        return original_convert(path)
+
+    monkeypatch.setattr(startup, "convert_to_markdown", convert)
+    assert run_main() == 0
+    assert saw_backup == [b"user bytes that must survive"]
+    assert (repo_tmp / "a.eml.md").exists()
+    assert source.exists()
+
+
+def test_both_identical_one_authoritative_row_collapses_to_preferred(
+    repo_tmp, monkeypatch
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    alternate.write_bytes(preferred.read_bytes())
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("must trust token row")),
+    )
+
+    assert run_main() == 0
+    assert preferred.exists() and not alternate.exists()
+    assert token_map(repo_tmp) == {"a.eml.md": stored_count}
+    assert len(preserved_backups(repo_tmp, ".a.eml.md")) == 1
+
+    before = _index_mtimes(repo_tmp)
+    time.sleep(0.02)
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("second run must be stable")),
+    )
+    assert run_main() == 0
+    assert _index_mtimes(repo_tmp) == before
+
+
+def test_both_identical_two_agreeing_rows_collapse(repo_tmp, monkeypatch):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    alternate.write_bytes(preferred.read_bytes())
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    write_token_map(
+        repo_tmp, {"a.eml.md": stored_count, ".a.eml.md": stored_count}
+    )
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("must trust token rows")),
+    )
+
+    assert run_main() == 0
+    assert preferred.exists() and not alternate.exists()
+    assert token_map(repo_tmp) == {"a.eml.md": stored_count}
+    assert len(preserved_backups(repo_tmp, ".a.eml.md")) == 1
+
+
+def test_both_identical_no_rows_retokenizes_matching_hash(repo_tmp, monkeypatch):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    alternate.write_bytes(preferred.read_bytes())
+    (repo_tmp / ".token_index.csv").write_text("file,tokens\n", encoding="utf-8")
+    calls = []
+    original_count = startup.count_tokens
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: calls.append(path) or original_count(path),
+    )
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("must retokenize")),
+    )
+
+    assert run_main() == 0
+    assert calls == [preferred]
+    assert preferred.exists() and not alternate.exists()
+    assert set(token_map(repo_tmp)) == {"a.eml.md"}
+    assert len(preserved_backups(repo_tmp, ".a.eml.md")) == 1
+
+
+def test_both_identical_no_rows_without_matching_hash_preserves_and_regenerates(
+    repo_tmp, monkeypatch
+):
+    source = write_eml(repo_tmp / "a.eml")
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    preferred.write_bytes(b"same unindexed bytes")
+    alternate.write_bytes(preferred.read_bytes())
+    original_convert = startup.convert_to_markdown
+    conversions = []
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda path: conversions.append(path) or original_convert(path),
+    )
+
+    assert run_main() == 0
+    assert conversions == [source]
+    backups = preserved_backups(repo_tmp, "a.eml.md")
+    assert len(backups) == 1 and backups[0].read_bytes() == b"same unindexed bytes"
+    assert preferred.exists() and not alternate.exists()
+    assert preserved_backups(repo_tmp, ".a.eml.md") == []
+    assert set(token_map(repo_tmp)) == {"a.eml.md"}
+
+
+def test_one_file_with_own_row_discards_missing_candidate_row(repo_tmp):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    write_token_map(
+        repo_tmp, {"a.eml.md": stored_count, ".a.eml.md": stored_count + 5}
+    )
+
+    assert run_main() == 0
+    assert token_map(repo_tmp) == {"a.eml.md": stored_count}
+
+
+def test_both_identical_two_disagreeing_rows_are_unresolved(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    alternate.write_bytes(preferred.read_bytes())
+    before_preferred = preferred.read_bytes()
+    write_token_map(repo_tmp, {"a.eml.md": 11, ".a.eml.md": 12})
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("conflict excluded")),
+    )
+
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "a.eml.md and .a.eml.md" in out
+    assert "token rows disagree" in out
+    assert preferred.read_bytes() == alternate.read_bytes() == before_preferred
+    assert token_map(repo_tmp) == {"a.eml.md": 11, ".a.eml.md": 12}
+
+
+def test_both_different_two_authoritative_rows_are_unresolved(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    preferred_before = preferred.read_bytes()
+    alternate.write_bytes(b"different indexed bytes")
+    write_token_map(repo_tmp, {"a.eml.md": 10, ".a.eml.md": 20})
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("conflict excluded")),
+    )
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("conflict excluded")),
+    )
+
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "a.eml.md and .a.eml.md" in out
+    assert "byte-different" in out
+    assert preferred.read_bytes() == preferred_before
+    assert alternate.read_bytes() == b"different indexed bytes"
+    assert token_map(repo_tmp) == {"a.eml.md": 10, ".a.eml.md": 20}
+
+
+def test_new_unresolved_conflict_is_not_hash_certified(
+    repo_tmp, monkeypatch
+):
+    write_eml(repo_tmp / "a.eml")
+    (repo_tmp / "a.eml.md").write_bytes(b"first indexed artifact")
+    (repo_tmp / ".a.eml.md").write_bytes(b"second indexed artifact")
+    write_token_map(repo_tmp, {"a.eml.md": 1, ".a.eml.md": 2})
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("conflict excluded")),
+    )
+
+    assert run_main() == 1
+    assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
+    assert token_map(repo_tmp) == {"a.eml.md": 1, ".a.eml.md": 2}
+
+
+def test_both_different_no_rows_preserved_then_regenerated(
+    repo_tmp, monkeypatch
+):
+    source = write_eml(repo_tmp / "a.eml")
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    preferred.write_bytes(b"first unique bytes")
+    alternate.write_bytes(b"second unique bytes")
+    seen = []
+    original_convert = startup.convert_to_markdown
+
+    def convert(path):
+        assert not preferred.exists() and not alternate.exists()
+        seen.extend(
+            backup.read_bytes()
+            for name in ("a.eml.md", ".a.eml.md")
+            for backup in preserved_backups(repo_tmp, name)
+        )
+        return original_convert(path)
+
+    monkeypatch.setattr(startup, "convert_to_markdown", convert)
+    assert run_main() == 0
+    assert source.exists() and preferred.exists() and not alternate.exists()
+    assert set(seen) == {b"first unique bytes", b"second unique bytes"}
+    assert set(token_map(repo_tmp)) == {"a.eml.md"}
+
+
+def test_two_phase_preservation_failure_leaves_both_candidates(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    preferred.write_bytes(b"first")
+    alternate.write_bytes(b"second")
+    original_copy = startup._copy_to_unique_backup
+    calls = 0
+
+    def fail_second(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected preservation failure")
+        return original_copy(path)
+
+    monkeypatch.setattr(startup, "_copy_to_unique_backup", fail_second)
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("conflict excluded")),
+    )
+
+    assert run_main() == 1
+    assert "preservation failure" in capsys.readouterr().out
+    assert preferred.read_bytes() == b"first"
+    assert alternate.read_bytes() == b"second"
+    assert preserved_backups(repo_tmp, "a.eml.md") == []
+    assert preserved_backups(repo_tmp, ".a.eml.md") == []
+
+
+def test_conflict_backup_retries_exclusive_name_without_clobber(
+    repo_tmp, monkeypatch
+):
+    candidate = repo_tmp / "a.eml.md"
+    candidate.write_bytes(b"candidate bytes")
+    collision = repo_tmp / "a.eml.md.conflict-preserved-first"
+    collision.write_bytes(b"existing backup")
+    values = iter(["first", "second"])
+
+    class FakeUUID:
+        def __init__(self, value):
+            self.hex = value
+
+    monkeypatch.setattr(
+        startup.uuid, "uuid4", lambda: FakeUUID(next(values))
+    )
+    backup = startup._copy_to_unique_backup(candidate)
+
+    assert backup.name == "a.eml.md.conflict-preserved-second"
+    assert backup.read_bytes() == b"candidate bytes"
+    assert collision.read_bytes() == b"existing backup"
+    assert candidate.read_bytes() == b"candidate bytes"
+
+
+def test_unhashable_preference_flip_retains_then_recovers(
+    repo_tmp, monkeypatch, capsys
+):
+    source = write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    original_bytes = (repo_tmp / "a.eml.md").read_bytes()
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    set_dotfiles(repo_tmp, True)
+    original_hash = startup.hash_file
+    monkeypatch.setattr(startup, "hash_file", _raise_for(source, original_hash))
+
+    assert run_main() == 1
+    assert (repo_tmp / "a.eml.md").read_bytes() == original_bytes
+    assert not (repo_tmp / ".a.eml.md").exists()
+    assert token_map(repo_tmp) == {"a.eml.md": stored_count}
+
+    monkeypatch.setattr(startup, "hash_file", original_hash)
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(AssertionError("must trust stored count")),
+    )
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 renamed" in out and "0 converted, 1 unchanged" in out
+    assert (repo_tmp / ".a.eml.md").read_bytes() == original_bytes
+    assert token_map(repo_tmp) == {".a.eml.md": stored_count}
+
+
+def test_canonical_rename_failure_is_unresolved_and_preserves_authority(
+    repo_tmp, monkeypatch, capsys
+):
+    write_eml(repo_tmp / "a.eml")
+    assert run_main() == 0
+    authoritative = (repo_tmp / "a.eml.md").read_bytes()
+    stored_count = token_map(repo_tmp)["a.eml.md"]
+    set_dotfiles(repo_tmp, True)
+    original_replace = startup.os.replace
+
+    def targeted_replace(source, destination):
+        if Path(source).name == "a.eml.md" and Path(destination).name == ".a.eml.md":
+            raise OSError("injected rename failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(startup.os, "replace", targeted_replace)
+    assert run_main() == 1
+    assert "injected rename failure" in capsys.readouterr().out
+    assert (repo_tmp / "a.eml.md").read_bytes() == authoritative
+    assert not (repo_tmp / ".a.eml.md").exists()
+    assert token_map(repo_tmp) == {"a.eml.md": stored_count}
+
+
+def test_unhashable_both_file_conflict_is_reported_without_mutation(
+    repo_tmp, monkeypatch, capsys
+):
+    source = write_eml(repo_tmp / "a.eml")
+    preferred = repo_tmp / "a.eml.md"
+    alternate = repo_tmp / ".a.eml.md"
+    preferred.write_bytes(b"preferred")
+    alternate.write_bytes(b"alternate")
+    write_token_map(repo_tmp, {"a.eml.md": 1, ".a.eml.md": 2})
+    monkeypatch.setattr(startup, "hash_file", _raise_for(source, startup.hash_file))
+
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "could not be hashed" in out
+    assert "a.eml.md and .a.eml.md" in out
+    assert preferred.read_bytes() == b"preferred"
+    assert alternate.read_bytes() == b"alternate"
+    assert token_map(repo_tmp) == {"a.eml.md": 1, ".a.eml.md": 2}
 
 
 def test_malformed_repo_settings_aborts_before_touching_anything(repo_tmp, capsys):
@@ -750,6 +1473,84 @@ def test_ocr_sidecar_deleted_token_row_restored_via_migration(
     assert calls == []
     assert (repo_tmp / "scan.pdf.md").read_bytes() == sidecar_bytes
     assert {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")} == {"scan.pdf.md"}
+
+
+def test_needs_ocr_lost_done_does_not_retokenize_or_certify(
+    repo_tmp, monkeypatch, capsys
+):
+    sidecar_bytes = _ocr_convert_scan(repo_tmp, monkeypatch, capsys)
+    prior_hash = (repo_tmp / ".hash_index.csv").read_bytes()
+    (repo_tmp / ".token_index.csv").write_text("file,tokens\n", encoding="utf-8")
+    ocr_index = startup.load_ocr_index(repo_tmp)
+    ocr_index["scan.pdf"]["ocr_done"] = ""
+    startup.save_ocr_index(repo_tmp, ocr_index)
+    monkeypatch.setattr(
+        startup,
+        "count_tokens",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError("lost OCR authority must not be retokenized")
+        ),
+    )
+    converter_calls = []
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: converter_calls.append(source) or "wrong route",
+    )
+
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "1 deferred for OCR" in out
+    assert converter_calls == []
+    assert not (repo_tmp / "scan.pdf.md").exists()
+    backups = preserved_backups(repo_tmp, "scan.pdf.md")
+    assert len(backups) == 1 and backups[0].read_bytes() == sidecar_bytes
+    assert read_csv_dict(repo_tmp / ".token_index.csv") == []
+    assert (repo_tmp / ".hash_index.csv").read_bytes() == prior_hash
+
+
+def test_single_unindexed_needs_ocr_sidecar_preserved_before_authorized_ocr(
+    repo_tmp, monkeypatch
+):
+    import sys
+
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    unindexed = repo_tmp / "scan.pdf.md"
+    unindexed.write_bytes(b"unindexed scan notes")
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    monkeypatch.setattr(startup.subprocess, "run", _fake_focr_success)
+
+    assert run_main() == 0
+    backups = preserved_backups(repo_tmp, "scan.pdf.md")
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"unindexed scan notes"
+    assert unindexed.exists()
+    assert unindexed.read_bytes() != b"unindexed scan notes"
+    assert set(token_map(repo_tmp)) == {"scan.pdf.md"}
+
+
+def test_both_unindexed_needs_ocr_files_preserved_then_deferred(
+    repo_tmp, monkeypatch, capsys
+):
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    assert run_main() == 0
+    capsys.readouterr()
+    preferred = repo_tmp / "scan.pdf.md"
+    alternate = repo_tmp / ".scan.pdf.md"
+    preferred.write_bytes(b"first scan bytes")
+    alternate.write_bytes(b"second scan bytes")
+    monkeypatch.setattr(
+        startup,
+        "convert_to_markdown",
+        lambda source: (_ for _ in ()).throw(AssertionError("OCR source routed wrong")),
+    )
+
+    assert run_main() == 0
+    assert "1 deferred for OCR" in capsys.readouterr().out
+    assert not preferred.exists() and not alternate.exists()
+    assert preserved_backups(repo_tmp, "scan.pdf.md")[0].read_bytes() == b"first scan bytes"
+    assert preserved_backups(repo_tmp, ".scan.pdf.md")[0].read_bytes() == b"second scan bytes"
+    assert read_csv_dict(repo_tmp / ".token_index.csv") == []
 
 
 def test_ocr_flagged_pdf_with_missing_sidecar_is_deferred_never_converted(

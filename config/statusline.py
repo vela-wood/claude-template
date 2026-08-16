@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from .common import SetupError
+from .common import (
+    SetupError,
+    load_settings_or_raise,
+    quote_for_platform,
+    write_settings,
+)
 
 SCRIPT_FILENAME = "ccstatus.py"
 
@@ -85,14 +90,6 @@ def detect_python3() -> str | None:
     return None
 
 
-def _quote_for_platform(arg: str, platform: str) -> str:
-    """shlex.quote on POSIX; list2cmdline-style double-quoting on Windows.
-    Testable on any OS."""
-    if platform == "win32":
-        return subprocess.list2cmdline([arg])
-    return shlex.quote(arg)
-
-
 def script_source(repo_root: Path) -> Path:
     """The in-repo statusline script (the install source)."""
     return Path(repo_root) / SCRIPT_FILENAME
@@ -111,8 +108,8 @@ def build_statusline_command(
 ) -> str:
     """The statusLine command for ~/.claude/settings.json: the installed
     statusline script. No Node, no external renderer."""
-    quoted_python = _quote_for_platform(python3, platform)
-    quoted_script = _quote_for_platform(str(script_path), platform)
+    quoted_python = quote_for_platform(python3, platform)
+    quoted_script = quote_for_platform(script_path, platform)
     return f"{quoted_python} {quoted_script}"
 
 
@@ -154,37 +151,16 @@ def statusline_settings(path: Path) -> str | None:
     return None
 
 
-def _load_settings_or_raise(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        raise SetupError(
-            f"A settings file has a problem and setup can't change it "
-            f"safely — ask for help, or delete it and run setup again. "
-            f"(File: {path}; {exc})"
-        )
-    if not isinstance(data, dict):
-        raise SetupError(
-            f"A settings file has a problem and setup can't change it "
-            f"safely — ask for help, or delete it and run setup again. "
-            f"(File: {path}; not in the expected format)"
-        )
-    return data
-
-
 def merge_statusline_settings(path: Path, statusline_cmd: str) -> bool:
     """Set statusLine in a Claude settings file, preserving every other key
     (permissions, hooks, env, ...). Returns False when already identical
     (skip). Malformed JSON → SetupError; never clobber."""
-    data = _load_settings_or_raise(path)
+    data = load_settings_or_raise(path)
     entry = {"type": "command", "command": statusline_cmd, "padding": 0}
     if data.get("statusLine") == entry:
         return False
     data["statusLine"] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_settings(path, data)
     return True
 
 
@@ -195,12 +171,73 @@ def remove_local_statusline(path: Path) -> bool:
     to remove. Malformed JSON → SetupError; never clobber."""
     if not path.exists():
         return False
-    data = _load_settings_or_raise(path)
+    data = load_settings_or_raise(path)
     if "statusLine" not in data:
         return False
     del data["statusLine"]
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_settings(path, data)
     return True
+
+
+@dataclass(frozen=True)
+class PreparedStatuslineInstallation:
+    """Validated statusline copy and final user-settings mutation."""
+
+    source: Path
+    target: Path
+    command: str
+    settings_path: Path
+    settings: dict
+    settings_changed: bool
+
+
+def prepare_user_statusline(
+    repo_root: Path,
+    user_claude_dir: Path,
+    python3: str,
+    *,
+    platform: str = sys.platform,
+    settings_path: Path | None = None,
+) -> PreparedStatuslineInstallation:
+    """Validate and prepare an install without copying or writing files."""
+    source = script_source(repo_root)
+    if not source.exists():
+        raise SetupError(
+            f"The statusline script is missing from this toolkit "
+            f"({source}) — update the toolkit (git pull) and try again."
+        )
+    target = installed_script(user_claude_dir)
+    command = build_statusline_command(python3, target, platform=platform)
+    exact_settings_path = (
+        Path(settings_path)
+        if settings_path is not None
+        else Path(user_claude_dir) / "settings.json"
+    )
+    settings = load_settings_or_raise(exact_settings_path)
+    entry = {"type": "command", "command": command, "padding": 0}
+    settings_changed = settings.get("statusLine") != entry
+    if settings_changed:
+        settings["statusLine"] = entry
+    return PreparedStatuslineInstallation(
+        source=source,
+        target=target,
+        command=command,
+        settings_path=exact_settings_path,
+        settings=settings,
+        settings_changed=settings_changed,
+    )
+
+
+def commit_user_statusline(prepared: PreparedStatuslineInstallation) -> None:
+    """Commit an already-validated statusline preparation without rereading."""
+    prepared.target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(prepared.source, prepared.target)
+    try:
+        os.chmod(prepared.target, 0o755)
+    except OSError:
+        pass  # the command runs it via python3, not the execute bit
+    if prepared.settings_changed:
+        write_settings(prepared.settings_path, prepared.settings)
 
 
 def install_user_statusline(
@@ -209,26 +246,18 @@ def install_user_statusline(
     python3: str,
     *,
     platform: str = sys.platform,
+    settings_path: Path | None = None,
 ) -> str:
     """Install the statusline account-wide: copy the script into
     ~/.claude/hooks/ and point statusLine in ~/.claude/settings.json at it.
-    Returns the command written. Malformed settings → SetupError (the copy
-    is harmless on its own, so it happens first)."""
-    source = script_source(repo_root)
-    if not source.exists():
-        raise SetupError(
-            f"The statusline script is missing from this toolkit "
-            f"({source}) — update the toolkit (git pull) and try again."
-        )
-    target = installed_script(user_claude_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
-    try:
-        os.chmod(target, 0o755)
-    except OSError:
-        pass  # the command runs it via python3, not the execute bit
-    command = build_statusline_command(python3, target, platform=platform)
-    merge_statusline_settings(
-        Path(user_claude_dir) / "settings.json", command
+    Returns the command written. The exact settings path is validated before
+    the script is copied."""
+    prepared = prepare_user_statusline(
+        repo_root,
+        user_claude_dir,
+        python3,
+        platform=platform,
+        settings_path=settings_path,
     )
-    return command
+    commit_user_statusline(prepared)
+    return prepared.command

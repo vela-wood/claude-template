@@ -20,9 +20,10 @@ import json
 import os
 import shutil
 import subprocess
+import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,7 @@ class ProcessingResult:
     tokens: int | None = None
     ocr_done: bool = False  # OCR-state transition to stage on success
     detail: str = ""
+    staged_sidecar: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -105,26 +107,23 @@ def count_tokens(path: Path) -> int:
     return len(_encoding.encode(text))
 
 
-def converted_path(source: Path) -> Path:
-    """Return the expected converted-file path for a source file.
-
-    Style-aware: the only place sidecar names are built. Dotfile style
-    (SIDECAR_DOTFILES) prefixes the sidecar name with a dot.
-    """
+def _sidecar_path(source: Path, *, dotted: bool) -> Path:
+    """Return the sidecar path for ``source`` in the requested style."""
     if source.suffix.lower() not in SOURCE_SUFFIXES:
         raise ValueError(f"Unsupported source type: {source}")
-    if SIDECAR_DOTFILES:
+    if dotted:
         return source.parent / f".{source.name}.md"
     return source.parent / f"{source.name}.md"
 
 
+def converted_path(source: Path) -> Path:
+    """Return the sidecar path selected by the current repo setting."""
+    return _sidecar_path(source, dotted=SIDECAR_DOTFILES)
+
+
 def other_style_path(source: Path) -> Path:
     """The sidecar path in the style NOT currently selected (for migration)."""
-    if source.suffix.lower() not in SOURCE_SUFFIXES:
-        raise ValueError(f"Unsupported source type: {source}")
-    if SIDECAR_DOTFILES:
-        return source.parent / f"{source.name}.md"
-    return source.parent / f".{source.name}.md"
+    return _sidecar_path(source, dotted=not SIDECAR_DOTFILES)
 
 
 def _rel(root: Path, path: Path) -> str:
@@ -136,22 +135,21 @@ def _rel(root: Path, path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def serialize_hash_index(index: dict[str, str]) -> str:
+def _serialize_index(index: dict[str, Any], value_header: str) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["file", "hash"])
+    writer.writerow(["file", value_header])
     for rel_path in sorted(index):
         writer.writerow([rel_path, index[rel_path]])
     return buf.getvalue()
+
+
+def serialize_hash_index(index: dict[str, str]) -> str:
+    return _serialize_index(index, "hash")
 
 
 def serialize_token_index(index: dict[str, int]) -> str:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["file", "tokens"])
-    for rel_path in sorted(index):
-        writer.writerow([rel_path, index[rel_path]])
-    return buf.getvalue()
+    return _serialize_index(index, "tokens")
 
 
 def load_hash_index(root: Path) -> dict[str, str]:
@@ -278,11 +276,154 @@ class MigrationStats:
     renamed: int = 0
     repaired: int = 0
     retokenized: int = 0
-    conflicts: int = 0
+    resolved_conflicts: int = 0
+    conflicts: list["SidecarConflict"] = field(default_factory=list)
+    skip_processing: set[str] = field(default_factory=set)
+    defer_sidecar_commit: set[str] = field(default_factory=set)
 
     @property
     def total(self) -> int:
-        return self.renamed + self.repaired + self.retokenized + self.conflicts
+        return (
+            self.renamed
+            + self.repaired
+            + self.retokenized
+            + self.resolved_conflicts
+            + len(self.conflicts)
+        )
+
+    @property
+    def excluded_rels(self) -> set[str]:
+        return self.skip_processing | {conflict.source_rel for conflict in self.conflicts}
+
+
+@dataclass(frozen=True)
+class SidecarConflict:
+    source_rel: str
+    preferred_rel: str
+    alternate_rel: str
+    reason: str
+
+
+def _files_equal(first: Path, second: Path) -> bool:
+    """Compare two files without loading either one wholly into memory."""
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as left, second.open("rb") as right:
+        while True:
+            left_chunk = left.read(1024 * 1024)
+            right_chunk = right.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+
+def _copy_to_unique_backup(path: Path) -> Path:
+    """Copy ``path`` to a verified, exclusive, non-sidecar backup."""
+    for _attempt in range(100):
+        backup = path.with_name(
+            f"{path.name}.conflict-preserved-{uuid.uuid4().hex}"
+        )
+        try:
+            destination = backup.open("xb")
+        except FileExistsError:
+            continue
+        try:
+            with path.open("rb") as source, destination:
+                shutil.copyfileobj(source, destination, 1024 * 1024)
+                destination.flush()
+        except BaseException:
+            destination.close()
+            backup.unlink(missing_ok=True)
+            raise
+        try:
+            if not _files_equal(path, backup):
+                raise OSError("backup verification failed")
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+    raise FileExistsError(f"could not reserve a conflict backup for {path}")
+
+
+def _preserve_candidates(
+    root: Path,
+    candidates: list[Path],
+    *,
+    remove: list[Path] | None = None,
+) -> dict[Path, Path]:
+    """Secure and verify every backup before removing any candidate name."""
+    backups: dict[Path, Path] = {}
+    try:
+        for candidate in candidates:
+            backups[candidate] = _copy_to_unique_backup(candidate)
+    except BaseException:
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)
+        raise
+
+    for candidate, backup in backups.items():
+        print(f"\tPreserved {_rel(root, candidate)} at {_rel(root, backup)}")
+
+    for candidate in candidates if remove is None else remove:
+        candidate.unlink()
+    return backups
+
+
+def _record_conflict(
+    stats: MigrationStats,
+    source_rel: str,
+    preferred_rel: str,
+    alternate_rel: str,
+    reason: str,
+) -> None:
+    conflict = SidecarConflict(
+        source_rel, preferred_rel, alternate_rel, reason
+    )
+    stats.conflicts.append(conflict)
+    print(
+        f"\tERROR: unresolved sidecar conflict for {source_rel}: "
+        f"{preferred_rel} and {alternate_rel}: {reason}"
+    )
+
+
+def _authoritative_count(
+    token_index: dict[str, int], sidecar_rel: str, sidecar: Path
+) -> int | None:
+    count = token_index.get(sidecar_rel)
+    if sidecar.exists() and type(count) is int:
+        return count
+    return None
+
+
+def _canonicalize_authority(
+    root: Path,
+    authority: Path,
+    preferred: Path,
+    authority_rel: str,
+    preferred_rel: str,
+    alternate_rel: str,
+    count: int,
+    token_index: dict[str, int],
+) -> bool:
+    """Canonicalize file first, then move/collapse its token row."""
+    renamed = authority != preferred
+    collapsed_alternate = (
+        authority_rel == preferred_rel and alternate_rel in token_index
+    )
+    if renamed:
+        os.replace(authority, preferred)
+        print(
+            f"\tRenamed authoritative sidecar {authority_rel} -> {preferred_rel}"
+        )
+    token_index[preferred_rel] = count
+    if alternate_rel != preferred_rel:
+        token_index.pop(alternate_rel, None)
+    if authority_rel != preferred_rel:
+        print(f"\tMoved token row {authority_rel} -> {preferred_rel}")
+    elif collapsed_alternate:
+        print(f"\tCollapsed token rows to {preferred_rel}")
+    return renamed
 
 
 def migrate_sidecars(
@@ -291,58 +432,255 @@ def migrate_sidecars(
     hashes: dict[str, str],
     hash_index: dict[str, str],
     token_index: dict[str, int],
+    ocr_index: dict[str, dict[str, str]],
 ) -> MigrationStats:
-    """Rename sidecars from the other naming style into the current one and
-    repair index drift, updating token_index keys in place.
-
-    Per discovered source, with cur = converted_path(src) and
-    alt = other_style_path(src):
-
-    1. Both exist → conflict: keep cur, touch nothing, warn naming both
-       paths. Never silently delete user-visible data.
-    2. cur missing, alt exists → os.replace(alt, cur); rewrite the token
-       key. File first, index later: a crash between the two heals on the
-       next run instead of reconverting.
-    3. cur exists, token row still keyed under alt (crash window) →
-       rewrite the key in memory (repair).
-    4. cur exists, no token row under either key, certified hash matches
-       the fresh hash → re-tokenize instead of reconverting. Covers
-       migrated OCR sidecars and index/file drift; for scanned PDFs the
-       only correct recovery.
-
-    Edited sidecars (*_eYYYYMMDD*) are user-created, not index-tracked, and
-    deliberately not migrated.
-    """
+    """Resolve sidecar naming from physical bytes and loaded token authority."""
     stats = MigrationStats()
     for src in sources:
         rel = _rel(root, src)
-        if rel not in hashes:  # unhashable: leave prior state untouched
+        preferred, alternate = converted_path(src), other_style_path(src)
+        preferred_rel = _rel(root, preferred)
+        alternate_rel = _rel(root, alternate)
+        preferred_exists = preferred.exists()
+        alternate_exists = alternate.exists()
+
+        # Physical conflicts must be reported even when source hashing failed.
+        if preferred_exists and alternate_exists and rel not in hashes:
+            _record_conflict(
+                stats,
+                rel,
+                preferred_rel,
+                alternate_rel,
+                "the source could not be hashed, so authority cannot be evaluated safely",
+            )
             continue
-        cur, alt = converted_path(src), other_style_path(src)
-        cur_rel, alt_rel = _rel(root, cur), _rel(root, alt)
+        if rel not in hashes:
+            continue
+
+        preferred_count = _authoritative_count(
+            token_index, preferred_rel, preferred
+        )
+        alternate_count = _authoritative_count(
+            token_index, alternate_rel, alternate
+        )
+        matching_hash = hash_index.get(rel) == hashes[rel]
+        ocr_row = ocr_index.get(rel, {})
+        needs_ocr = ocr_row.get("verdict") in NEEDS_OCR_VERDICTS
+        current_ocr_recovery = (
+            needs_ocr
+            and ocr_row.get("ocr_done") == "true"
+            and ocr_row.get("hash") == hashes[rel]
+        )
+        retokenize_allowed = matching_hash and not needs_ocr
+
         try:
-            if cur.exists() and alt.exists():
-                stats.conflicts += 1
-                print(
-                    f"\tWARNING: both sidecar styles exist for {rel}: "
-                    f"keeping {cur_rel}, ignoring {alt_rel} — delete the stale one."
+            if preferred_exists and alternate_exists:
+                identical = _files_equal(preferred, alternate)
+                authoritative = sum(
+                    count is not None
+                    for count in (preferred_count, alternate_count)
                 )
-            elif alt.exists():
-                os.replace(alt, cur)
-                if alt_rel in token_index:
-                    token_index[cur_rel] = token_index.pop(alt_rel)
-                stats.renamed += 1
-            elif cur.exists() and cur_rel not in token_index:
-                if alt_rel in token_index:
-                    token_index[cur_rel] = token_index.pop(alt_rel)
+
+                if identical and authoritative == 2:
+                    if preferred_count != alternate_count:
+                        _record_conflict(
+                            stats,
+                            rel,
+                            preferred_rel,
+                            alternate_rel,
+                            "the two authoritative token rows disagree",
+                        )
+                        continue
+                    _preserve_candidates(root, [alternate])
+                    _canonicalize_authority(
+                        root,
+                        preferred,
+                        preferred,
+                        preferred_rel,
+                        preferred_rel,
+                        alternate_rel,
+                        preferred_count,
+                        token_index,
+                    )
+                    stats.resolved_conflicts += 1
+                    continue
+
+                if identical and authoritative == 1:
+                    authority = (
+                        preferred if preferred_count is not None else alternate
+                    )
+                    authority_rel = (
+                        preferred_rel
+                        if preferred_count is not None
+                        else alternate_rel
+                    )
+                    count = (
+                        preferred_count
+                        if preferred_count is not None
+                        else alternate_count
+                    )
+                    duplicate = alternate if authority == preferred else preferred
+                    _preserve_candidates(root, [duplicate])
+                    renamed = _canonicalize_authority(
+                        root,
+                        authority,
+                        preferred,
+                        authority_rel,
+                        preferred_rel,
+                        alternate_rel,
+                        count,
+                        token_index,
+                    )
+                    stats.renamed += int(renamed)
+                    stats.resolved_conflicts += 1
+                    continue
+
+                if identical and authoritative == 0:
+                    if retokenize_allowed:
+                        _preserve_candidates(root, [alternate])
+                        token_index[preferred_rel] = count_tokens(preferred)
+                        token_index.pop(alternate_rel, None)
+                        stats.retokenized += 1
+                        stats.resolved_conflicts += 1
+                    elif current_ocr_recovery:
+                        _preserve_candidates(root, [alternate])
+                        stats.resolved_conflicts += 1
+                    else:
+                        _preserve_candidates(
+                            root,
+                            [preferred],
+                            remove=[preferred, alternate],
+                        )
+                        token_index.pop(preferred_rel, None)
+                        token_index.pop(alternate_rel, None)
+                        stats.resolved_conflicts += 1
+                    continue
+
+                if not identical and authoritative == 2:
+                    _record_conflict(
+                        stats,
+                        rel,
+                        preferred_rel,
+                        alternate_rel,
+                        "the index identifies two byte-different generated artifacts",
+                    )
+                    continue
+
+                if not identical and authoritative == 1:
+                    authority = (
+                        preferred if preferred_count is not None else alternate
+                    )
+                    authority_rel = (
+                        preferred_rel
+                        if preferred_count is not None
+                        else alternate_rel
+                    )
+                    count = (
+                        preferred_count
+                        if preferred_count is not None
+                        else alternate_count
+                    )
+                    unindexed = alternate if authority == preferred else preferred
+                    _preserve_candidates(root, [unindexed])
+                    renamed = _canonicalize_authority(
+                        root,
+                        authority,
+                        preferred,
+                        authority_rel,
+                        preferred_rel,
+                        alternate_rel,
+                        count,
+                        token_index,
+                    )
+                    stats.renamed += int(renamed)
+                    stats.resolved_conflicts += 1
+                    stats.skip_processing.add(rel)
+                    continue
+
+                # Both files are byte-different and neither is indexed.
+                _preserve_candidates(root, [preferred, alternate])
+                token_index.pop(preferred_rel, None)
+                token_index.pop(alternate_rel, None)
+                stats.resolved_conflicts += 1
+                continue
+
+            existing = (
+                preferred if preferred_exists else alternate if alternate_exists else None
+            )
+            if existing is None:
+                if (
+                    preferred_rel in token_index
+                    or alternate_rel in token_index
+                ):
+                    token_index.pop(preferred_rel, None)
+                    token_index.pop(alternate_rel, None)
+                    stats.defer_sidecar_commit.add(rel)
                     stats.repaired += 1
-                elif hash_index.get(rel) == hashes[rel]:
-                    token_index[cur_rel] = count_tokens(cur)
+                    print(
+                        f"\tRemoved missing-candidate token rows for {rel}; "
+                        "any regenerated sidecar will wait for token-index persistence"
+                    )
+                continue
+            existing_rel = preferred_rel if existing == preferred else alternate_rel
+            existing_count = (
+                preferred_count if existing == preferred else alternate_count
+            )
+
+            # The row belonging to the physical file is authoritative. Any row
+            # for the missing candidate is collapsed only after canonicalization.
+            if existing_count is not None:
+                renamed = _canonicalize_authority(
+                    root,
+                    existing,
+                    preferred,
+                    existing_rel,
+                    preferred_rel,
+                    alternate_rel,
+                    existing_count,
+                    token_index,
+                )
+                stats.renamed += int(renamed)
+                continue
+
+            # Only preferred-file/alternate-row can arise from file-first rename.
+            if existing == preferred and type(token_index.get(alternate_rel)) is int:
+                token_index[preferred_rel] = token_index.pop(alternate_rel)
+                print(f"\tMoved token row {alternate_rel} -> {preferred_rel}")
+                stats.repaired += 1
+                continue
+
+            no_candidate_rows = (
+                preferred_rel not in token_index and alternate_rel not in token_index
+            )
+            if no_candidate_rows and (retokenize_allowed or current_ocr_recovery):
+                if existing == alternate:
+                    os.replace(alternate, preferred)
+                    print(
+                        f"\tRenamed sidecar for recovery {alternate_rel} -> {preferred_rel}"
+                    )
+                    stats.renamed += 1
+                if retokenize_allowed:
+                    token_index[preferred_rel] = count_tokens(preferred)
                     stats.retokenized += 1
+                continue
+
+            # The existing bytes are unindexed and cannot be overwritten safely.
+            stale_candidate_row = (
+                preferred_rel in token_index or alternate_rel in token_index
+            )
+            _preserve_candidates(root, [existing])
+            token_index.pop(preferred_rel, None)
+            token_index.pop(alternate_rel, None)
+            if stale_candidate_row:
+                stats.defer_sidecar_commit.add(rel)
         except Exception as exc:
-            print(
-                f"\tWARNING: sidecar migration failed for {rel}: "
-                f"{type(exc).__name__}: {exc}"
+            _record_conflict(
+                stats,
+                rel,
+                preferred_rel,
+                alternate_rel,
+                f"automatic preservation or canonicalization failed: "
+                f"{type(exc).__name__}: {exc}",
             )
     return stats
 
@@ -411,6 +749,7 @@ def _finalize_sidecar(
     text: str,
     route: str,
     ocr_done: bool = False,
+    defer_commit: bool = False,
 ) -> ProcessingResult:
     """Temp-file write, empty rejection, tokenize, rehash, atomic replace.
 
@@ -421,6 +760,7 @@ def _finalize_sidecar(
     out = converted_path(src)
     conv_rel = _rel(root, out)
     tmp = None
+    staged_sidecar = None
     try:
         if not text or not text.strip():
             raise ValueError(f"empty conversion output for {src.name}")
@@ -428,10 +768,21 @@ def _finalize_sidecar(
         tokens = count_tokens(tmp)
         if hash_file(src) != pre_hash:
             raise ValueError("source changed during conversion")
-        commit_staged(tmp, out)
-        tmp = None
+        if defer_commit:
+            staged_sidecar = tmp
+            tmp = None
+        else:
+            commit_staged(tmp, out)
+            tmp = None
         return ProcessingResult(
-            rel, STATUS_CONVERTED, route, conv_rel, pre_hash, tokens, ocr_done
+            rel,
+            STATUS_CONVERTED,
+            route,
+            conv_rel,
+            pre_hash,
+            tokens,
+            ocr_done,
+            staged_sidecar=staged_sidecar,
         )
     except Exception as exc:
         return ProcessingResult(
@@ -447,13 +798,17 @@ def _finalize_sidecar(
 
 
 def convert_sources(
-    root: Path, to_convert: list[Path], hashes: dict[str, str]
+    root: Path,
+    to_convert: list[Path],
+    hashes: dict[str, str],
+    defer_commit_rels: set[str] | None = None,
 ) -> list[ProcessingResult]:
     """Convert sources through the router with at most 4 active converters."""
     if not to_convert:
         return []
     print(f"\nConverting {len(to_convert)} file(s)...")
     results: list[ProcessingResult] = []
+    defer_commit_rels = defer_commit_rels or set()
 
     def _do_convert(src: Path) -> ProcessingResult:
         rel = _rel(root, src)
@@ -469,7 +824,14 @@ def convert_sources(
                 _rel(root, out),
                 detail=f"{type(exc).__name__}: {exc}",
             )
-        return _finalize_sidecar(root, src, hashes[rel], text, route_for(src))
+        return _finalize_sidecar(
+            root,
+            src,
+            hashes[rel],
+            text,
+            route_for(src),
+            defer_commit=rel in defer_commit_rels,
+        )
 
     with ThreadPoolExecutor(max_workers=CONVERSION_MAX_WORKERS) as pool:
         futures = {pool.submit(_do_convert, src): src for src in to_convert}
@@ -530,7 +892,10 @@ def _parse_focr_batch_results(stdout: str) -> dict[str, dict[str, Any]]:
 
 
 def run_ocr(
-    root: Path, to_ocr: list[str], hashes: dict[str, str]
+    root: Path,
+    to_ocr: list[str],
+    hashes: dict[str, str],
+    defer_commit_rels: set[str] | None = None,
 ) -> list[ProcessingResult]:
     """Run focr on pending PDFs; return one ProcessingResult per PDF.
 
@@ -545,6 +910,8 @@ def run_ocr(
     import tempfile
 
     import fitz
+
+    defer_commit_rels = defer_commit_rels or set()
 
     if not to_ocr:
         print("\nOCR: nothing to do (all flagged PDFs already converted).")
@@ -653,6 +1020,7 @@ def run_ocr(
                 "\n\n".join(page_md),
                 "ocr",
                 ocr_done=True,
+                defer_commit=rel in defer_commit_rels,
             )
             results.append(result)
             if result.status == STATUS_CONVERTED:
@@ -696,6 +1064,12 @@ def stage_results(
             continue
         hash_index[r.source_rel] = r.file_hash
         token_index[r.sidecar_rel] = r.tokens
+        try:
+            alternate_rel = str(other_style_path(Path(r.source_rel)))
+        except ValueError:
+            alternate_rel = None
+        if alternate_rel is not None and alternate_rel != r.sidecar_rel:
+            token_index.pop(alternate_rel, None)
         if r.ocr_done and r.source_rel in ocr_index:
             ocr_index[r.source_rel]["ocr_done"] = "true"
 
@@ -706,18 +1080,41 @@ def reconcile_indexes(
     hash_index: dict[str, str],
     token_index: dict[str, int],
     ocr_index: dict[str, dict[str, str]],
+    *,
+    hashable_rels: set[str] | None = None,
+    migration: MigrationStats | None = None,
+    pending_sidecar_rels: set[str] | None = None,
 ) -> None:
-    """Prune rows only for sources that are no longer discovered.
+    """Prune stale rows without deleting recoverable sidecar authority."""
+    if hashable_rels is None:
+        hashable_rels = set(discovered_rels)
+    conflict_rels = (
+        {conflict.source_rel for conflict in migration.conflicts}
+        if migration is not None
+        else set()
+    )
+    protected_rels = (discovered_rels - hashable_rels) | conflict_rels
+    pending_sidecar_rels = pending_sidecar_rels or set()
 
-    Discovery determines existence; a discovered-but-unhashable source keeps
-    its prior hash, token, and OCR rows and any existing sidecar.
-    """
-    expected_sidecars = set()
+    expected_sidecars: set[str] = set(pending_sidecar_rels)
     for rel in discovered_rels:
         try:
-            expected_sidecars.add(_rel(root, converted_path(root / rel)))
+            preferred = converted_path(root / rel)
+            alternate = other_style_path(root / rel)
         except ValueError:
-            pass
+            continue
+        preferred_rel = _rel(root, preferred)
+        alternate_rel = _rel(root, alternate)
+        if rel in protected_rels:
+            # Preserve both prior rows even when a candidate is missing: an
+            # unhashable/unresolved source cannot be canonicalized safely.
+            expected_sidecars.update((preferred_rel, alternate_rel))
+            continue
+        if preferred.exists():
+            expected_sidecars.add(preferred_rel)
+        if alternate.exists():
+            expected_sidecars.add(alternate_rel)
+
     for rel in [r for r in hash_index if r not in discovered_rels]:
         del hash_index[rel]
     for rel in [r for r in token_index if r not in expected_sidecars]:
@@ -738,11 +1135,23 @@ def _matches_disk(path: Path, text: str) -> bool:
         return False
 
 
+def _write_if_changed(root: Path, name: str, text: str) -> str | None:
+    """Write one prepared index serialization unless disk already matches."""
+    if _matches_disk(root / name, text):
+        return None
+    try:
+        atomic_write_text(root / name, text, newline="")
+    except Exception as exc:
+        return f"writing {name} failed: {type(exc).__name__}: {exc}"
+    return None
+
+
 def persist_indexes(
     root: Path,
     hash_index: dict[str, str],
     token_index: dict[str, int],
     ocr_index: dict[str, dict[str, str]],
+    staged_results: list[ProcessingResult] | None = None,
 ) -> list[str]:
     """Atomically write the indexes: token, then OCR, then hash last.
 
@@ -755,38 +1164,57 @@ def persist_indexes(
     stale. A withheld hash write is itself recorded in the returned errors.
     """
     errors: list[str] = []
-    for name, serialize, save in (
-        (
-            TOKEN_INDEX_FILENAME,
-            lambda: serialize_token_index(token_index),
-            lambda: save_token_index(root, token_index),
-        ),
-        (
-            OCR_INDEX_FILENAME,
-            lambda: serialize_ocr_index(ocr_index),
-            lambda: save_ocr_index(root, ocr_index),
-        ),
-    ):
-        try:
-            if not _matches_disk(root / name, serialize()):
-                save()
-        except Exception as exc:
-            errors.append(f"writing {name} failed: {type(exc).__name__}: {exc}")
-    if errors:
+    staged_results = [
+        result
+        for result in (staged_results or [])
+        if result.staged_sidecar is not None
+    ]
+
+    def discard_uncommitted() -> None:
+        for result in staged_results:
+            if result.staged_sidecar is not None:
+                discard_staged(result.staged_sidecar)
+
+    def withhold_hash() -> list[str]:
         errors.append(
             f"withheld {HASH_INDEX_FILENAME} write (certification marker) "
             "because a preceding index write failed"
         )
         return errors
-    try:
-        if not _matches_disk(
-            root / HASH_INDEX_FILENAME, serialize_hash_index(hash_index)
-        ):
-            save_hash_index(root, hash_index)
-    except Exception as exc:
-        errors.append(
-            f"writing {HASH_INDEX_FILENAME} failed: {type(exc).__name__}: {exc}"
-        )
+
+    token_text = serialize_token_index(token_index)
+    token_error = _write_if_changed(root, TOKEN_INDEX_FILENAME, token_text)
+    if token_error is not None:
+        errors.append(token_error)
+
+    ocr_text = serialize_ocr_index(ocr_index)
+    ocr_error = _write_if_changed(root, OCR_INDEX_FILENAME, ocr_text)
+    if ocr_error is not None:
+        errors.append(ocr_error)
+
+    if errors:
+        discard_uncommitted()
+        return withhold_hash()
+
+    for result in staged_results:
+        try:
+            commit_staged(
+                result.staged_sidecar,
+                root / result.sidecar_rel,
+            )
+        except Exception as exc:
+            errors.append(
+                f"committing {result.sidecar_rel} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    if errors:
+        discard_uncommitted()
+        return withhold_hash()
+
+    hash_text = serialize_hash_index(hash_index)
+    hash_error = _write_if_changed(root, HASH_INDEX_FILENAME, hash_text)
+    if hash_error is not None:
+        errors.append(hash_error)
     return errors
 
 
@@ -826,7 +1254,8 @@ def summarize(
         print(
             f"Sidecar naming migration: {migration.renamed} renamed, "
             f"{migration.repaired} repaired, {migration.retokenized} re-tokenized, "
-            f"{migration.conflicts} conflict(s)."
+            f"{migration.resolved_conflicts} automatically resolved conflict(s), "
+            f"{len(migration.conflicts)} unresolved conflict(s)."
         )
     print(f"Total tokens across converted files: {total_tokens:,}")
     print(
@@ -838,7 +1267,9 @@ def summarize(
             print(f"\tFAILED {r.source_rel}: {r.detail}")
     for err in index_errors:
         print(f"\tFAILED {err}")
-    if counts[STATUS_FAILED] or index_errors:
+    if counts[STATUS_FAILED] or index_errors or (
+        migration is not None and migration.conflicts
+    ):
         return 1
     return 0
 
@@ -923,15 +1354,21 @@ def main() -> int:
         # 3b. Migrate/repair sidecar naming before classification so
         # classify_pdfs/pending_ocr_rels and the certify loop see
         # post-migration names.
-        migration = migrate_sidecars(root, sources, hashes, hash_index, token_index)
+        migration = migrate_sidecars(
+            root, sources, hashes, hash_index, token_index, ocr_index
+        )
+        migration_excluded = migration.excluded_rels
 
         # 4. Classify new/changed PDFs (flags needs_ocr in .ocr_index.csv)
         pdf_rels = sorted(
-            rel for rel in hashes if Path(rel).suffix.lower() == ".pdf"
+            rel
+            for rel in hashes
+            if Path(rel).suffix.lower() == ".pdf"
+            and rel not in migration_excluded
         )
         classify_failures = classify_pdfs(root, pdf_rels, hashes, ocr_index)
         results.extend(classify_failures)
-        excluded = {r.source_rel for r in results}
+        excluded = {r.source_rel for r in results} | migration_excluded
 
         pending_ocr = [
             rel
@@ -953,9 +1390,16 @@ def main() -> int:
                 ProcessingResult(rel, STATUS_DEFERRED_FOR_OCR, "ocr")
                 for rel in pending_ocr
             )
-        elif args.ocr:
-            results.extend(run_ocr(root, pending_ocr, hashes))
-        handled = {r.source_rel for r in results}
+        elif args.ocr and pending_ocr:
+            results.extend(
+                run_ocr(
+                    root,
+                    pending_ocr,
+                    hashes,
+                    migration.defer_sidecar_commit,
+                )
+            )
+        handled = {r.source_rel for r in results} | migration_excluded
 
         # 5. Certify unchanged sources; convert the rest through the router.
         # Invariant: a PDF whose OCR verdict is in NEEDS_OCR_VERDICTS is
@@ -1023,15 +1467,38 @@ def main() -> int:
                     )
                 continue
             to_convert.append(src)
-        results.extend(convert_sources(root, to_convert, hashes))
+        results.extend(
+            convert_sources(
+                root,
+                to_convert,
+                hashes,
+                migration.defer_sidecar_commit,
+            )
+        )
 
         # 6. Stage successful results into the indexes
         stage_results(results, hash_index, token_index, ocr_index)
 
     # 7. Prune rows only for sources no longer discovered, then persist all
     # three indexes (token, OCR, hash last) even when nothing was found.
-    reconcile_indexes(root, discovered_rels, hash_index, token_index, ocr_index)
-    index_errors = persist_indexes(root, hash_index, token_index, ocr_index)
+    reconcile_indexes(
+        root,
+        discovered_rels,
+        hash_index,
+        token_index,
+        ocr_index,
+        hashable_rels=set(hashes) if sources else set(),
+        migration=migration,
+        pending_sidecar_rels={
+            result.sidecar_rel
+            for result in results
+            if result.staged_sidecar is not None
+            and result.sidecar_rel is not None
+        },
+    )
+    index_errors = persist_indexes(
+        root, hash_index, token_index, ocr_index, results
+    )
 
     # 8. Summary and exit status from ProcessingResult statuses
     return summarize(results, token_index, ocr_index, index_errors, migration)

@@ -114,4 +114,4 @@ Invoke-Step `
     }
 
 Write-Host ""
-Write-Host "Install completed. Please run uv run config.py for caption integration." -ForegroundColor Green
+Write-Host "Install completed. Please run uv run config.py to configure Caption credentials, sidecar naming, and the statusline/usage guard." -ForegroundColor Green

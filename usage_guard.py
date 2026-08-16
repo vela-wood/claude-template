@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Opt-in, per-session usage guard fed by the statusline cache.
 
-Reads ONLY ~/legal/ccstatus.json — the verbatim statusline payload cached by
-~/.claude/hooks/ccstatus.py, which `uv run config.py` installs from this
-repo's ccstatus.py (freshness = file mtime). The same setup also installs
-this script's hooks into the repo's .claude/settings.local.json. No network,
-no OAuth, no Keychain; stdlib only, so the hook hot path never needs
-`uv run`. Until that install happens the cache never refreshes and every
-hook mode silently does nothing (fails open) — the only visible complaint
-is in the manual mode. The arm command offered at session start is built
-from sys.executable (the interpreter the installed hook launched).
+Reads ccstatus.json from CLAUDE_CONFIG_DIR when that variable is non-empty,
+otherwise from ~/.claude. For migration, ~/legal/ccstatus.json is read only
+when the canonical cache is absent and the legacy cache exists. The payload
+is the verbatim statusline cache written by ccstatus.py (freshness = file
+mtime). The same setup also installs this script's hooks into the repo's
+.claude/settings.local.json. No network, no OAuth, no Keychain; stdlib only,
+so the hook hot path never needs `uv run`. Until that install happens the
+cache never refreshes and every hook mode silently does nothing (fails open)
+— the only visible complaint is in the manual mode. Commands shown by the
+guard reuse sys.executable (the interpreter the installed hook launched).
 
 At session start, if any usage window is >90%, a SessionStart hook injects
 additionalContext asking Claude to offer a one-session stop-at-99% guard.
 Off by default; declining or ignoring = no guard. Arming is keyed to
-session_id (a flag file in .ccguard/ next to this script), so it can never outlive the
-session. Every hook mode ALWAYS exits 0 and fails open: a missing or stale
-cache can warn, but can never block work.
+session_id (a flag file in .ccguard/ next to this script). Armed hook calls
+refresh the flag; flags expire after six hours of inactivity when a later
+hook prunes them, so a flag may survive a finished session until that later
+pruning. Every hook mode ALWAYS exits 0 and fails open: a missing or stale
+cache can warn, but can never block work. ScheduleWakeup and AskUserQuestion
+are always allowed so an armed guard cannot prevent recovery or consent.
 
 Modes:
     --session-start        SessionStart hook (reads hook JSON on stdin)
@@ -36,11 +40,19 @@ import os
 import sys
 import time
 
-CACHE = os.path.expanduser("~/legal/ccstatus.json")
+
+def _config_dir():
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    return os.path.expanduser(override) if override else os.path.expanduser("~/.claude")
+
+
+CACHE = os.path.join(_config_dir(), "ccstatus.json")
+LEGACY_CACHE = os.path.expanduser("~/legal/ccstatus.json")
 SCRIPT_PATH = os.path.abspath(__file__)
 GUARD_DIR = os.path.join(os.path.dirname(SCRIPT_PATH), ".ccguard")
-FLAG_MAX_AGE_SECONDS = 7 * 24 * 3600
+FLAG_MAX_AGE_SECONDS = 6 * 3600
 OFFER_PERCENT = 90.0
+NEVER_DENY_TOOLS = {"ScheduleWakeup", "AskUserQuestion"}
 
 WINDOW_LABELS = {"five_hour": "session (5h)", "seven_day": "weekly (7d)"}
 
@@ -48,6 +60,15 @@ WINDOW_LABELS = {"five_hour": "session (5h)", "seven_day": "weekly (7d)"}
 # ---------------------------------------------------------------------------
 # Shared core: cache → gauges
 # ---------------------------------------------------------------------------
+
+
+def _cache_file():
+    """Choose the canonical cache, falling back only to an existing legacy file."""
+    if os.path.exists(CACHE):
+        return CACHE
+    if os.path.exists(LEGACY_CACHE):
+        return LEGACY_CACHE
+    return CACHE
 
 
 def parse_resets_at(value):
@@ -75,7 +96,7 @@ def parse_resets_at(value):
     return None
 
 
-def read_gauges(max_age):
+def read_gauges(max_age, cache_file=None):
     """Return (gauges, stale).
 
     gauges: one dict per live rate-limit window in the cache — whatever keys
@@ -83,9 +104,10 @@ def read_gauges(max_age):
     is in the past. [] means missing/unparseable cache or no surviving
     windows (treated identically). stale: cache mtime older than max_age.
     """
+    cache_file = _cache_file() if cache_file is None else cache_file
     try:
-        mtime = os.stat(CACHE).st_mtime
-        with open(CACHE, encoding="utf-8") as fh:
+        mtime = os.stat(cache_file).st_mtime
+        with open(cache_file, encoding="utf-8") as fh:
             payload = json.load(fh)
         rate_limits = payload["rate_limits"]
         if not isinstance(rate_limits, dict):
@@ -156,20 +178,43 @@ def remove_dir_if_empty():
 
 
 def _quote_arg(arg, platform=sys.platform):
-    """Minimal platform quoting for the arm command shown to Claude."""
+    """Quote one command argument for the platform's terminal syntax."""
     arg = str(arg)
     if platform == "win32":
-        return f'"{arg}"' if any(ch.isspace() for ch in arg) else arg
+        import subprocess  # lazy: the --hook-json fast path rarely needs it
+
+        return subprocess.list2cmdline([arg])
     import shlex  # lazy: the --hook-json fast path never pays this import
 
     return shlex.quote(arg)
 
 
-def read_session_id_from_stdin():
+def _python_interpreter(platform=None):
+    if sys.executable:
+        return sys.executable
+    platform = sys.platform if platform is None else platform
+    return "python" if platform == "win32" else "python3"
+
+
+def _guard_command(option, session_id, platform=None, threshold=None):
+    platform = sys.platform if platform is None else platform
+    parts = [
+        _quote_arg(_python_interpreter(platform), platform=platform),
+        _quote_arg(SCRIPT_PATH, platform=platform),
+        option,
+        _quote_arg(session_id, platform=platform),
+    ]
+    if threshold is not None:
+        parts.extend(("--threshold", f"{threshold:g}"))
+    return " ".join(parts)
+
+
+def read_hook_payload():
     try:
-        return str(json.loads(sys.stdin.read()).get("session_id") or "")
+        payload = json.loads(sys.stdin.read())
     except Exception:
-        return ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +225,30 @@ def read_session_id_from_stdin():
 def mode_session_start(args):
     """SessionStart hook: offer the guard when any window is >90%."""
     prune_flags()
-    session_id = read_session_id_from_stdin()
+    payload = read_hook_payload()
+    session_id = str(payload.get("session_id") or "")
     gauges, stale = read_gauges(args.max_age)
     if not gauges or stale or not session_id:
         return 0
     binding = max(gauges, key=lambda g: g["percent"])
+    if binding["percent"] >= args.threshold:
+        context = (
+            f"Claude usage is already exhausted for the guard: "
+            f"{binding['percent']:.0f}% of the {binding['label']} window is at "
+            f"or above the {args.threshold:g}% stop threshold. Do not offer or "
+            "arm the usage guard."
+        )
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
+        return 0
     if binding["percent"] <= OFFER_PERCENT:
         return 0
 
@@ -192,21 +256,19 @@ def mode_session_start(args):
     local_reset = local_reset_str(binding["reset"])
     if local_reset:
         reset_note = f"; resets {local_reset}"
-    # sys.executable is exactly the interpreter the installed SessionStart
-    # hook launched, so the arm command reuses it on both platforms.
-    python = sys.executable or ("python" if sys.platform == "win32" else "python3")
-    arm_cmd = (
-        f"{_quote_arg(python)} {_quote_arg(SCRIPT_PATH)} --arm {_quote_arg(session_id)}"
-    )
+    arm_cmd = _guard_command("--arm", session_id, threshold=args.threshold)
     context = (
         f"Claude usage is at {binding['percent']:.0f}% of the "
         f"{binding['label']} window{reset_note}. On the first turn, ask the "
         "user via the AskUserQuestion tool whether to arm a usage guard that "
-        "stops work at 99% FOR THIS SESSION ONLY. Options: "
+        f"stops work at {args.threshold:g}% FOR THIS SESSION ONLY. Options: "
         '"No, keep working (default; may spend extra usage)" and '
-        '"Yes, stop me at 99%". Only on an explicit yes, run exactly: '
+        f'"Yes, stop me at {args.threshold:g}%". Only on an explicit yes, run '
+        "exactly: "
         f"{arm_cmd} . On no (or if the user ignores the question), do "
-        "nothing — do not arm the guard."
+        "nothing — do not arm the guard. An armed flag expires after six "
+        "hours of inactivity when a later hook prunes it and may survive a "
+        "finished session until that pruning."
     )
     print(
         json.dumps(
@@ -221,13 +283,15 @@ def mode_session_start(args):
     return 0
 
 
-def mode_arm(session_id):
+def mode_arm(session_id, threshold=99.0):
     os.makedirs(GUARD_DIR, exist_ok=True)
     with open(flag_path(session_id), "w", encoding="utf-8") as fh:
         fh.write(dt.datetime.now(dt.timezone.utc).isoformat() + "\n")
     print(
         f"usage guard armed for session {session_id}: tool calls stop at "
-        f">=99% usage (disarm with --disarm {session_id})"
+        f">={threshold:g}% usage (disarm with --disarm {session_id}). The "
+        "flag expires after six hours of inactivity when a later hook prunes "
+        "it and may survive a finished session until that pruning."
     )
     return 0
 
@@ -243,10 +307,24 @@ def mode_disarm(session_id):
 
 
 def mode_hook_json(args):
-    """PreToolUse hook. Fast path first: unarmed sessions (the overwhelming
-    default) pay one stat and never touch the cache."""
-    session_id = read_session_id_from_stdin()
-    if not session_id or not os.path.exists(flag_path(session_id)):
+    """PreToolUse hook. Unarmed sessions never touch the usage cache."""
+    prune_flags()
+    payload = read_hook_payload()
+    session_id = str(payload.get("session_id") or "")
+    tool_name = str(payload.get("tool_name") or "")
+    armed_flag = flag_path(session_id)
+    if not session_id or not os.path.exists(armed_flag):
+        return 0
+
+    # The expiry measures inactivity, not time since arming. If the flag
+    # disappears between the existence check and refresh, fail open.
+    try:
+        now = time.time()
+        os.utime(armed_flag, (now, now))
+    except OSError:
+        return 0
+
+    if tool_name in NEVER_DENY_TOOLS:
         return 0
 
     gauges, stale = read_gauges(args.max_age)
@@ -284,6 +362,11 @@ def mode_hook_json(args):
                 f"({seconds // 3600}h {(seconds % 3600) // 60}m away). "
                 "Tell the user, then call ScheduleWakeup for 3 minutes after reset."
             )
+    disarm_cmd = _guard_command("--disarm", session_id)
+    reason += (
+        " ScheduleWakeup and AskUserQuestion remain allowed. To disarm this "
+        f"session from a terminal, run exactly: {disarm_cmd}"
+    )
     print(
         json.dumps(
             {
@@ -300,15 +383,17 @@ def mode_hook_json(args):
 
 def mode_manual(args):
     now = dt.datetime.now(dt.timezone.utc)
-    gauges, stale = read_gauges(args.max_age)
+    cache_file = _cache_file()
+    gauges, stale = read_gauges(args.max_age, cache_file=cache_file)
     if not gauges or stale:
         msg = (
-            "usage cache stale (statusline cache pipeline may be broken)"
+            f"usage cache stale at {cache_file} "
+            "(statusline cache pipeline may be broken)"
             if gauges
             else (
-                f"no live usage data in {CACHE} (missing, unparseable, or "
+                f"no live usage data in {cache_file} (missing, unparseable, or "
                 "all windows expired) — if the statusline was never "
-                "installed, run `uv run config.py`"
+                "installed, ask the user to run `uv run config.py`"
             )
         )
         print(msg, file=sys.stderr)
@@ -393,7 +478,7 @@ def main():
         except Exception:
             return 0
     if args.arm:
-        return mode_arm(args.arm)
+        return mode_arm(args.arm, args.threshold)
     if args.disarm:
         return mode_disarm(args.disarm)
     return mode_manual(args)
