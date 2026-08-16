@@ -20,6 +20,13 @@
   globs. `ls -a` displays dotfiles, but it does not make ordinary globs match them.
   Add `--no-ignore` only when the search must also include other ignored files.
 
+### 2.1 Cross-platform rules for generated shell commands (hooks, statusline)
+
+- **Claude Code runs hooks and the statusline through a POSIX shell on every platform.** On Windows that shell is Git Bash, not cmd.exe. Never emit cmd syntax (`if exist`, cmd-style `"..."` quoting via `subprocess.list2cmdline`) — it fails to parse in bash and can break every tool call in a session.
+- **Emit one command form for all platforms.** Do not branch on `sys.platform` to build different command syntax per OS; a single POSIX form (`[ -d ... ]`, `||`, `shlex.quote`) works everywhere Claude Code runs commands.
+- **Normalize path separators to forward slashes before quoting.** Windows accepts `/` in every API and program invocation, while a bare `\` in bash is an escape character: an unquoted `C:\Python\python.exe` loses every separator, and a trailing `\` before a closing quote escapes the quote itself.
+- **Quote with `shlex.quote` after normalizing**, never `subprocess.list2cmdline`. Note the sneaky case: `list2cmdline` leaves a space-free path *unquoted*, so the bug only surfaces with paths like `C:\Python\python.exe` once bash eats the backslashes.
+
 ## 3. Startup procedure
 
 Unless working on a pure coding task, run the below first. A pure coding task involves changes to the code inside this repo. Make sure any edits to the repo support both mac and windows users.

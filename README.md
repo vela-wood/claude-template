@@ -200,6 +200,21 @@ The two converters produce identical worst-file lists at identical rates — the
 
 ---
 
+## Cross-platform rules for generated shell commands
+
+These invariants come from a bug where cmd.exe-style quoting broke every tool call in a Windows session. Anyone changing how this repo writes hook or statusline commands should follow them:
+
+- **Claude Code runs hooks and the statusline through a POSIX shell on every platform.** On Windows that shell is Git Bash, not cmd.exe. Never emit cmd syntax (`if exist`, cmd-style `"..."` quoting via `subprocess.list2cmdline`) — it fails to parse in bash and can break every tool call in a session.
+- **Emit one command form for all platforms.** Do not branch on `sys.platform` to build different command syntax per OS; a single POSIX form (`[ -d ... ]`, `||`, `shlex.quote`) works everywhere Claude Code runs commands.
+- **Normalize path separators to forward slashes before quoting.** Windows accepts `/` in every API and program invocation, while a bare `\` in bash is an escape character: an unquoted `C:\Python\python.exe` loses every separator, and a trailing `\` before a closing quote escapes the quote itself.
+- **Quote with `shlex.quote` after normalizing**, never `subprocess.list2cmdline`. Note the sneaky case: `list2cmdline` leaves a space-free path *unquoted*, so the bug only surfaces with paths like `C:\Python\python.exe` once bash eats the backslashes.
+- **Never let a backslash survive into a written command.** Regression tests should assert `"\\" not in command` and `"if exist" not in command` for every emitted hook/statusline command, parameterized over Windows-shaped paths (drive letters, `Program Files`-style spaces, trailing backslashes).
+- **Status/"is it wired?" checks must reject stale cmd-quoted commands.** A command containing a backslash was written by a pre-fix version and cannot run in the POSIX shell — report it as not installed so the user reinstalls, rather than showing a green status over a dead hook.
+- **Treat an empty settings file as "nothing configured yet," not malformed JSON.** Hand-repair on a broken machine often leaves a settings file empty; refusing to touch it blocks recovery.
+- **Test with realistic Windows inputs, not just POSIX ones.** Include `C:\Program Files\...` interpreter paths, repo paths with spaces, and end-to-end assertions that what actually lands in both settings files is bash-safe.
+
+---
+
 ## How the AI is instructed
 
 The assistant's behavior is defined in a few files at the repo root:
