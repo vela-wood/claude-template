@@ -164,9 +164,7 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="write per-file CSV here")
     args = parser.parse_args()
 
-    # Lazy import: startup.py imports this module at top level, so importing
-    # startup here (not at module scope) avoids a circular import.
-    from startup import hash_file
+    from startup_lib.common import hash_file
 
     root = Path(args.root)
     rows = []

@@ -338,11 +338,11 @@ def repo_tmp(tmp_path, monkeypatch):
     global is restored after each test.
     """
     import repo_settings
-    import startup
+    import startup_lib.common
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["startup.py"])
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    monkeypatch.setattr(startup, "SIDECAR_DOTFILES", False)
-    monkeypatch.setattr(startup, "OCR_INT8", True)
+    monkeypatch.setattr(startup_lib.common, "SIDECAR_DOTFILES", False)
+    monkeypatch.setattr(startup_lib.common, "OCR_INT8", True)
     return tmp_path
