@@ -6,7 +6,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +20,13 @@ from startup_lib.convert import _finalize_sidecar
 # The model resizes pages to a 1024px global view, so 150 dpi is ample.
 _OCR_RASTER_DPI = 150
 
-# Rasterizing is independent per PDF and spends its time inside MuPDF and
-# zlib with the GIL released; same cap as the converter pool.
-_OCR_RASTER_MAX_WORKERS = 4
+# Rasterizing is serial on purpose. PyMuPDF calls mupdf.reinit_singlethreaded()
+# at import, which turns MuPDF's internal locks off, and MuPDF's context, store
+# and font caches are process-global: a separate fitz document per thread does
+# not isolate them, and concurrent get_pixmap/save can segfault the interpreter.
+# Nothing is lost by serializing. Measured on the 10-page corpus, rasterizing
+# takes 0.46s against 68s of OCR (0.7% of the run), so a pool here optimizes
+# noise while risking a crash that discards the whole run's indexes.
 
 # Windows' CreateProcess rejects a command line longer than 32,767
 # characters. Every additional chunk re-pays focr's multi-GB model load,
@@ -297,8 +300,8 @@ def run_ocr(
     with tempfile.TemporaryDirectory(prefix="focr-batch-") as tmp:
         tmp_dir = Path(tmp)
 
-        # 1. Rasterize every page of every pending PDF, one thread per PDF
-        # (each thread owns its own fitz document).
+        # 1. Rasterize every page of every pending PDF, one PDF at a time
+        # (see _OCR_RASTER_DPI above: MuPDF is not thread-safe here).
         def _rasterize(di: int, rel: str) -> list[Path]:
             print(f"\tRasterizing {rel}...", flush=True)
             paths: list[Path] = []
@@ -319,22 +322,16 @@ def run_ocr(
             print(f"\tERROR rasterizing {rel}: {shown}", flush=True)
 
         rasterized: dict[str, list[Path]] = {}
-        with ThreadPoolExecutor(max_workers=_OCR_RASTER_MAX_WORKERS) as pool:
-            futures = {
-                pool.submit(_rasterize, di, rel): rel
-                for di, rel in enumerate(to_ocr)
-            }
-            for future in as_completed(futures):
-                rel = futures[future]
-                try:
-                    paths = future.result()
-                except Exception as exc:
-                    _fail_raster(rel, f"rasterizing failed: {exc}", str(exc))
-                    continue
-                if not paths:
-                    _fail_raster(rel, "PDF has no pages", "PDF has no pages")
-                    continue
-                rasterized[rel] = paths
+        for di, rel in enumerate(to_ocr):
+            try:
+                paths = _rasterize(di, rel)
+            except Exception as exc:
+                _fail_raster(rel, f"rasterizing failed: {exc}", str(exc))
+                continue
+            if not paths:
+                _fail_raster(rel, "PDF has no pages", "PDF has no pages")
+                continue
+            rasterized[rel] = paths
 
         # Page order follows to_ocr, not completion order, so the argv and
         # every progress line stay deterministic.
