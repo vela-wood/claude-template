@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1251,12 +1252,16 @@ def test_installer_command_posix(tmp_path, monkeypatch):
     assert config_ocr.installer_url() == config_ocr.INSTALL_SH_URL
     assert config_ocr.installer_filename() == "install.sh"
     # --no-pull: the model download is our own next step, not the installer's.
+    # --version: pinned — the installer's own latest-release lookup can land
+    # on an upstream model-asset tag and abort.
     assert config_ocr.installer_command(script) == [
         "bash",
         str(script),
         "--easy-mode",
         "--no-pull",
         "--no-gum",
+        "--version",
+        config_ocr.FOCR_VERSION,
     ]
 
 
@@ -1273,7 +1278,18 @@ def test_installer_command_windows(tmp_path, monkeypatch):
         "-File",
         str(script),
         "-NoPull",
+        "-Version",
+        config_ocr.FOCR_VERSION,
     ]
+
+
+def test_pinned_version_is_a_valid_release_tag():
+    # Both upstream installers validate -Version/--version against this
+    # pattern and abort on mismatch; catch a bad bump here instead.
+    assert re.fullmatch(
+        r"v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?",
+        config_ocr.FOCR_VERSION,
+    )
 
 
 def test_pull_command_uses_resolved_binary():

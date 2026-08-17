@@ -35,6 +35,14 @@ INSTALL_PS1_URL = (
 )
 PROJECT_URL = "https://github.com/Dicklesworthstone/franken_ocr"
 
+# Pinned focr release, passed to the installers as -Version / --version.
+# Without a pin the installers resolve GitHub's "latest release", which is
+# whichever release was *created* most recently — and the upstream repo
+# publishes model-asset releases (e.g. `models-unlimited-wasm-v1`) in the
+# same feed, so the default resolution can land on a tag that is not a
+# program version and abort. Bump deliberately after vetting a new release.
+FOCR_VERSION = "v0.7.2"
+
 # What `focr pull` downloads: the int8 weights plus tokenizer.
 MODEL_DOWNLOAD_SIZE = "about 4 GB"
 
@@ -136,7 +144,9 @@ def installer_command(script: Path) -> list[str]:
     installer should not also prompt for it. `--easy-mode` puts ~/.local/bin
     on PATH in the user's shell rc files (the POSIX installer otherwise only
     prints advice); the Windows installer already edits the user PATH.
-    `--no-gum` keeps output plain for the log pane.
+    `--no-gum` keeps output plain for the log pane. `--version` / `-Version`
+    pins the release to FOCR_VERSION (see its comment for why the installers'
+    own latest-release lookup can't be trusted).
     """
     if _is_windows():
         return [
@@ -147,8 +157,18 @@ def installer_command(script: Path) -> list[str]:
             "-File",
             str(script),
             "-NoPull",
+            "-Version",
+            FOCR_VERSION,
         ]
-    return ["bash", str(script), "--easy-mode", "--no-pull", "--no-gum"]
+    return [
+        "bash",
+        str(script),
+        "--easy-mode",
+        "--no-pull",
+        "--no-gum",
+        "--version",
+        FOCR_VERSION,
+    ]
 
 
 def pull_command(focr: str) -> list[str]:
