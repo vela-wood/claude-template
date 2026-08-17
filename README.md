@@ -157,11 +157,11 @@ Under the hood, Word documents and PDFs are converted by **AnyDoc** (a fast loca
 
 ### AnyDoc PDF release
 
-PDFs use the official AnyDoc 0.1.8 wheel release with the `pdf-inspector` fix:
+PDFs use the official AnyDoc 0.1.9 wheel release with the `pdf-inspector` fix:
 
 - **The bug.** AnyDoc's `pdf-inspector` dependency (≤0.1.7) pre-strips `%` comments from PDF content streams but ignores backslash escapes inside string literals. An escaped `\)` makes it think the string closed, so a later `%` glyph inside the string is treated as a comment and the rest of the line is **silently deleted** — no error, no OCR flag.
 - **Why it hits this practice hard.** macOS Quartz PDFs (Word for Mac → PDF, i.e. most redlines) assign subset-font codes in first-use order, so common letters land on the `%`, `(`, `)` bytes. Worst observed case: ~60% of a redline silently dropped, including arbitration and indemnity provisions.
-- **Release.** Official [`firecrawl/anydoc` v0.1.8](https://github.com/firecrawl/anydoc/releases/tag/v0.1.8) depends on `pdf-inspector` 0.1.8, which includes the escaped-comment fix from [`firecrawl/pdf-inspector` PR #259](https://github.com/firecrawl/pdf-inspector/pull/259). It publishes `firecrawl-anydoc==0.1.8` ABI3 wheels for macOS, Linux, and Windows.
+- **Release.** The escaped-comment fix ([`firecrawl/pdf-inspector` PR #259](https://github.com/firecrawl/pdf-inspector/pull/259)) landed in `pdf-inspector` 0.1.8, first shipped by [`firecrawl/anydoc` v0.1.8](https://github.com/firecrawl/anydoc/releases/tag/v0.1.8). The current pin is [v0.1.9](https://github.com/firecrawl/anydoc/releases/tag/v0.1.9), whose only change is bumping `pdf-inspector` 0.1.8 → 1.14.2: resource caps on Form XObject expansion, CID `/W` ranges, CMaps, content-stream decode, and rect clustering so crafted PDFs cannot force unbounded CPU/memory; Form XObjects now track the text line matrix and honor `T*`/`TL`/`'`/`"`/`Tc`/`Tw`; small-caps runs merge instead of being read as extra table columns. `pdf-inspector` is statically linked into the AnyDoc wheel, so it can only be upgraded by an AnyDoc release — `pdf-inspector` 1.15.0 (2026-08-17) is not yet reachable. AnyDoc publishes `firecrawl-anydoc==0.1.9` ABI3 wheels for macOS, Linux, and Windows.
 - **Pinning.** `pyproject.toml` pins the official PyPI release, and `uv.lock` records the SHA-256 hash of every platform wheel. Users install a wheel and do not need Rust.
 
 **Benchmark** (`benchmark/` — 25 PDFs from the Juno matter; metric: unique ground-truth words missing from converter output, vs. a PyMuPDF text-layer baseline; comparison run 2026-08-06 on an M-series Mac, with official AnyDoc 0.1.8 re-run 2026-08-11):
@@ -170,7 +170,7 @@ PDFs use the official AnyDoc 0.1.8 wheel release with the `pdf-inspector` fix:
 |---|---|---|---|---|
 | MarkItDown (former PDF route) | 0.31% | 3.7% | 2 | 23.0 s |
 | AnyDoc 0.1.3 (former pin, buggy) | 1.13% | **27.0%** | 1 | 0.5 s |
-| AnyDoc 0.1.8 (current PDF route) | **0.10%** | 1.4% | 0 | **0.6 s** |
+| AnyDoc 0.1.8 (same PDF route as the current 0.1.9 pin) | **0.10%** | 1.4% | 0 | **0.6 s** |
 
 Notes: AnyDoc 0.1.3's 27% loss is `state_court_archive/Alice DTPA letter.pdf`, a Quartz PDF — exactly the bug above; AnyDoc 0.1.8 recovers it to 0.9%. MarkItDown's two >2% files are tokenization artifacts (hyphenation/whitespace), not real loss. AnyDoc 0.1.8 is ~40× faster than MarkItDown.
 
