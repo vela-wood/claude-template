@@ -29,7 +29,8 @@
       "Bash(uv tool install --force --python 3.13 \"caption-cli @ git+https://github.com/sec-chair/caption-cli.git\")",
       "Bash(.venv/bin/adeu:*)",
       "Bash(grep:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(uv run .claude/skills/vs/scripts/vs.py:*)"
     ]
   }
 }
