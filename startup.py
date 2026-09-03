@@ -12,7 +12,8 @@ is "unchanged" only when its fresh CRC32 equals the previously certified hash
 AND its sidecar exists AND it has a valid token row. Any hashing,
 classification, conversion, tokenization, requested-OCR, sidecar-write, or
 index-write failure leaves prior state in place, is reported, and produces a
-nonzero exit. Pending OCR consent and skipped .mbx notices alone exit zero.
+nonzero exit. Pending OCR consent, skipped .mbx notices, and recovered-OCR-layer
+notices alone exit zero.
 """
 
 import argparse

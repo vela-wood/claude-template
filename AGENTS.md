@@ -64,7 +64,7 @@ startup leaves the original candidates in place, skips the source, and exits 1.
 | Input | Converter | Notes |
 |---|---|---|
 | `.docx` → `.docx.md` | AnyDoc (`firecrawl-anydoc`, local) | |
-| `.pdf` → `.pdf.md` | AnyDoc (`firecrawl-anydoc`, local) | Uses official 0.1.9 (`pdf-inspector` 1.14.2), which includes the escaped-comment fix and passed the PDF corpus gate |
+| `.pdf` → `.pdf.md` | AnyDoc (`firecrawl-anydoc`, local) | Uses official 0.2.4 (`pdf-inspector` 1.14.2), which includes the escaped-comment fix and passed the PDF corpus gate. Pages whose text lives only in an invisible OCR layer (which AnyDoc drops) are recovered with PyMuPDF in reading order, marked in the sidecar with an HTML comment (`<!-- pages 3-19: text recovered from embedded OCR layer, not verified against the page image -->`), and listed under a `Notice:` in the run output; exit code stays 0 |
 | `.eml`, `.emlx` → `.md` | Python `email` module | Headers + plain-text body first |
 | `.msg`, `.oft` → `.md` | `extract-msg` | Body priority: plain text, then HTML, then RTF text; attachment filenames listed but contents/embedded messages are not converted |
 | `.mht`, `.mhtml` → `.md` | Python `email` + `markdownify` | HTML part is authoritative; plain-text fallback only if no HTML part |

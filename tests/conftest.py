@@ -308,6 +308,55 @@ def make_mixed_pdf(path: Path) -> Path:
     return path
 
 
+_VISIBLE_STAMP = "FILED 2023-12-20 CLERK OF COURT"
+_INVISIBLE_RENDER_MODE = 3
+
+
+def _add_layered_page(doc, text: str, hidden: bool) -> None:
+    """One page: visible stamp + invisible text (hidden) or plain text."""
+    page = doc.new_page()
+    if not hidden:
+        page.insert_text((72, 100), text, fontsize=11)
+        return
+    page.insert_text((72, 60), _VISIBLE_STAMP, fontsize=9)
+    page.insert_text((72, 100), text, fontsize=11, render_mode=_INVISIBLE_RENDER_MODE)
+
+
+def make_invisible_text_pdf(
+    path: Path, hidden: str, visible_stamp: str = _VISIBLE_STAMP
+) -> Path:
+    """Scan-style page: one visible stamp line over an invisible OCR layer."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 60), visible_stamp, fontsize=9)
+    page.insert_text((72, 100), hidden, fontsize=11, render_mode=_INVISIBLE_RENDER_MODE)
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def make_layered_pdf(
+    path: Path, pages: list[str], hidden: set[int], image_only: set[int] = frozenset()
+) -> Path:
+    """One page per string; indices in `hidden` carry the text invisibly,
+    indices in `image_only` get a full-page image and no text at all."""
+    import fitz
+
+    doc = fitz.open()
+    png = tiny_png_bytes()
+    for i, text in enumerate(pages):
+        if i in image_only:
+            page = doc.new_page()
+            page.insert_image(page.rect, stream=png)
+            continue
+        _add_layered_page(doc, text, i in hidden)
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
 def make_encrypted_pdf(path: Path) -> Path:
     import fitz
 

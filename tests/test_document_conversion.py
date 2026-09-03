@@ -12,6 +12,8 @@ from conftest import (
     make_digital_pdf,
     make_docx,
     make_encrypted_pdf,
+    make_invisible_text_pdf,
+    make_layered_pdf,
     make_malformed_pdf,
     make_mbox,
     make_mht,
@@ -533,6 +535,83 @@ def test_pdf_digital_text(tmp_path):
     out = dc.convert_to_markdown(src)
     assert "Recital one." in out
     assert "Recital two." in out
+
+
+_HIDDEN = "This sentence lives only in the invisible OCR layer of the scan."
+_MARKER_TAIL = "text recovered from embedded OCR layer, not verified against the page image -->"
+
+
+def test_pdf_invisible_layer_recovered(tmp_path):
+    src = make_invisible_text_pdf(tmp_path / "scan.pdf", _HIDDEN)
+    out = dc.convert_to_markdown(src)
+    assert _HIDDEN in out
+    assert "FILED 2023-12-20 CLERK OF COURT" in out
+    assert f"<!-- page 1: {_MARKER_TAIL}" in out
+
+
+def test_pdf_invisible_runs_in_page_order(tmp_path):
+    pages = [
+        "Alpha digital page with enough visible text.",
+        "Hidden bravo page carried only in the OCR layer.",
+        "Hidden charlie page carried only in the OCR layer.",
+        "Delta digital page with enough visible text.",
+    ]
+    src = make_layered_pdf(tmp_path / "layered.pdf", pages, hidden={1, 2})
+    out = dc.convert_to_markdown(src)
+    idx = [out.index(w) for w in ("Alpha", "bravo", "charlie", "Delta")]
+    assert idx == sorted(idx)
+    assert out.count("<!-- page") == 1
+    assert f"<!-- pages 2-3: {_MARKER_TAIL}" in out
+
+
+def test_pdf_image_only_run_falls_back(tmp_path):
+    pages = [
+        "Alpha digital page with enough visible text.",
+        "Hidden bravo page carried only in the OCR layer.",
+        "",
+    ]
+    src = make_layered_pdf(tmp_path / "mixed.pdf", pages, hidden={1}, image_only={2})
+    out = dc.convert_to_markdown(src)
+    assert "Alpha" in out
+    assert "bravo" in out
+
+
+def test_pdf_digital_only_is_unchanged_path(tmp_path):
+    import anydoc
+
+    src = make_digital_pdf(tmp_path / "digital.pdf", ["Recital one.", "Recital two."])
+    assert dc.convert_to_markdown(src) == anydoc.to_markdown(str(src))
+    assert "<!-- page" not in dc.convert_to_markdown(src)
+
+
+def test_pdf_visible_dominant_page_stays_anydoc(tmp_path):
+    import fitz
+
+    src = tmp_path / "watermark.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Plenty of ordinary visible digital text on this page.", fontsize=11)
+    page.insert_text((72, 300), "DRAFT COPY ONLY WATERMARK", fontsize=11, render_mode=3)
+    doc.save(str(src))
+    doc.close()
+    out = dc.convert_to_markdown(src)
+    assert "ordinary visible" in out
+    assert "<!-- page" not in out
+
+
+def test_recovery_notes_parses_markers():
+    text = (
+        "intro\n\n"
+        f"<!-- pages 2-3: {_MARKER_TAIL}\n\nbody\n\n"
+        f"<!-- page 5: {_MARKER_TAIL}\n\nmore"
+    )
+    assert dc.recovery_notes(text) == ("pages 2-3", "page 5")
+    assert dc.recovery_notes("plain text") == ()
+
+
+def test_docx_route_untouched():
+    assert dc._CONVERTERS[".docx"] is dc._convert_anydoc
+    assert dc._CONVERTERS[".pdf"] is dc._convert_pdf
 
 
 def test_pdf_malformed_raises(tmp_path):

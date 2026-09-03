@@ -1,7 +1,10 @@
 """Suffix-routed document-to-Markdown conversion.
 
 Routes (see AGENTS.md / README.md):
-  .docx/.pdf     -> AnyDoc (firecrawl-anydoc, local Python API)
+  .docx          -> AnyDoc (firecrawl-anydoc, local Python API)
+  .pdf           -> AnyDoc, except pages whose text lives only in an invisible
+                    OCR layer (render mode 3), which AnyDoc drops; those pages
+                    are recovered with PyMuPDF and marked with an HTML comment
   .eml/.emlx     -> Python email module (existing rendering, unchanged)
   .msg/.oft      -> extract-msg + shared renderer
   .mht/.mhtml    -> Python email module + markdownify (HTML part first)
@@ -21,7 +24,10 @@ import codecs
 import email as _email
 import mailbox
 import re
+import threading
 from email import policy as _policy
+from enum import Enum
+from itertools import groupby
 from pathlib import Path
 
 NATIVE_EMAIL_SUFFIXES = {".eml", ".emlx"}
@@ -410,11 +416,185 @@ def _convert_anydoc(source: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# .pdf — AnyDoc, plus recovery of invisible OCR layers it drops
+# ---------------------------------------------------------------------------
+#
+# A scanned PDF that went through an OCR pass carries its text in PDF render
+# mode 3 (invisible) under the page image. AnyDoc drops mode-3 text, so such
+# pages convert to nothing (or to a visible stamp alone), and pdfcheck counts
+# the invisible text as digital, so focr never runs either. PyMuPDF reads the
+# layer: get_texttrace() spans carry `type` == render mode.
+#
+#   pages:   1   2   3   4   5   6          kind per page
+#            N   N   R   R   R   N          N = NORMAL, R = RECOVER
+#   runs:    [1-2: sub-PDF -> AnyDoc]
+#            [3-5: marker + fitz text]
+#            [6:   sub-PDF -> AnyDoc]       joined in page order
+#
+# MuPDF is not thread-safe (see startup_lib/ocr.py); convert_sources runs four
+# converters at once, so every fitz call here is serialized under _FITZ_LOCK.
+# AnyDoc runs outside the lock.
+
+_INVISIBLE_RENDER_MODE = 3
+_MIN_INVISIBLE_CHARS = 20
+_RECOVERY_NOTE = (
+    "text recovered from embedded OCR layer, not verified against the page image"
+)
+_RECOVERY_MARKER_RE = re.compile(
+    rf"^<!-- (pages? [0-9-]+): {re.escape(_RECOVERY_NOTE)} -->$", re.MULTILINE
+)
+_RUN_SEPARATOR = "\n\n"
+_FITZ_LOCK = threading.Lock()
+
+
+class _PageKind(Enum):
+    NORMAL = "normal"
+    RECOVER = "recover"
+
+
+def _page_label(start: int, end: int) -> str:
+    """0-based inclusive run -> '"page 7"' or '"pages 3-19"' (1-based)."""
+    if start == end:
+        return f"page {start + 1}"
+    return f"pages {start + 1}-{end + 1}"
+
+
+def _recovery_marker(start: int, end: int) -> str:
+    return f"<!-- {_page_label(start, end)}: {_RECOVERY_NOTE} -->"
+
+
+def _span_chars(span) -> int:
+    return sum(1 for c in span["chars"] if not chr(c[0]).isspace())
+
+
+def _page_kind(page) -> _PageKind:
+    invisible = visible = 0
+    for span in page.get_texttrace():
+        if span["type"] == _INVISIBLE_RENDER_MODE:
+            invisible += _span_chars(span)
+        else:
+            visible += _span_chars(span)
+
+    # A digital page with a small hidden watermark stays NORMAL.
+    if invisible >= _MIN_INVISIBLE_CHARS and invisible > visible:
+        return _PageKind.RECOVER
+    return _PageKind.NORMAL
+
+
+def _page_kinds(doc) -> list[_PageKind]:
+    """Classify every page; any fitz trouble means 'nothing to recover' so
+    the plain AnyDoc path (and its own exceptions) is preserved."""
+    try:
+        if doc.needs_pass:
+            return []
+        return [_page_kind(page) for page in doc]
+    except Exception:
+        return []
+
+
+def _page_runs(kinds: list[_PageKind]) -> list[tuple[int, int, _PageKind]]:
+    """Contiguous same-kind runs as (start, end, kind), 0-based inclusive."""
+    runs = []
+    pos = 0
+    for kind, group in groupby(kinds):
+        n = len(list(group))
+        runs.append((pos, pos + n - 1, kind))
+        pos += n
+    return runs
+
+
+def _fitz_run(doc, start: int, end: int) -> str:
+    texts = [doc[i].get_text("text").strip() for i in range(start, end + 1)]
+    return _RUN_SEPARATOR.join(t for t in texts if t)
+
+
+def _sub_pdf(doc, start: int, end: int) -> bytes:
+    sub = None
+    try:
+        import fitz
+
+        sub = fitz.open()
+        sub.insert_pdf(doc, from_page=start, to_page=end)
+        return sub.tobytes()
+    finally:
+        if sub is not None:
+            sub.close()
+
+
+def _anydoc_run(data: bytes, fallback: str) -> str:
+    """AnyDoc on one sub-PDF; an image-only run is rejected (NeedsOcrError
+    since 0.2.4, UnsupportedError before), so fall back to whatever text
+    fitz saw (usually nothing)."""
+    import anydoc
+
+    try:
+        return anydoc.to_markdown_bytes(data)
+    except (anydoc.UnsupportedError, anydoc.NeedsOcrError):
+        return fallback
+
+
+def _recovered_run(doc, start: int, end: int) -> str:
+    text = _fitz_run(doc, start, end)
+    if not text:
+        return ""
+    return _recovery_marker(start, end) + _RUN_SEPARATOR + text
+
+
+def _convert_pdf(source: Path) -> str:
+    """AnyDoc for the whole file unless some page needs layer recovery.
+
+    Costs one extra PyMuPDF texttrace pass per page on every PDF; cheap next
+    to AnyDoc. Fully digital PDFs return exactly anydoc.to_markdown(source).
+    """
+    import anydoc
+    import fitz
+
+    fitz.TOOLS.mupdf_display_errors(False)
+
+    # Everything fitz touches happens under the lock; AnyDoc runs after.
+    with _FITZ_LOCK:
+        try:
+            doc = fitz.open(str(source))
+        except Exception:
+            doc = None
+        kinds = _page_kinds(doc) if doc is not None else []
+        if _PageKind.RECOVER not in kinds:
+            if doc is not None:
+                doc.close()
+            return anydoc.to_markdown(str(source))
+
+        pending: list[tuple[_PageKind, bytes | None, str]] = []
+        for start, end, kind in _page_runs(kinds):
+            if kind is _PageKind.RECOVER:
+                pending.append((kind, None, _recovered_run(doc, start, end)))
+            else:
+                pending.append((kind, _sub_pdf(doc, start, end), _fitz_run(doc, start, end)))
+        doc.close()
+
+    outputs = []
+    for kind, data, text in pending:
+        chunk = text if kind is _PageKind.RECOVER else _anydoc_run(data, text)
+        if chunk.strip():
+            outputs.append(chunk.strip())
+    return _RUN_SEPARATOR.join(outputs)
+
+
+def recovery_notes(text: str) -> tuple[str, ...]:
+    """Page labels of every recovery marker in a sidecar, in order.
+
+    >>> recovery_notes("<!-- pages 3-19: ... -->")  # doctest: +SKIP
+    ('pages 3-19',)
+    """
+    return tuple(_RECOVERY_MARKER_RE.findall(text))
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
 _CONVERTERS = {
     **{s: _convert_anydoc for s in ANYDOC_SUFFIXES},
+    ".pdf": _convert_pdf,
     **{s: _convert_eml for s in NATIVE_EMAIL_SUFFIXES},
     **{s: _convert_msg for s in MSG_SUFFIXES},
     **{s: _convert_mht for s in MHT_SUFFIXES},

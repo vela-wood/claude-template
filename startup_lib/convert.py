@@ -1,9 +1,10 @@
 """PDF classification, sidecar production, and the converter pool."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
-from document_conversion import convert_to_markdown, route_for
+from document_conversion import convert_to_markdown, recovery_notes, route_for
 from fsio import commit_staged, discard_staged, stage_text
 from pdfcheck import NEEDS_OCR_VERDICTS, classify_pdf, index_row
 from startup_lib import common
@@ -128,6 +129,11 @@ def _finalize_sidecar(
             discard_staged(tmp)
 
 
+def _recovery_detail(notes: tuple[str, ...]) -> str:
+    """'embedded OCR layer recovered: pages 3-19, page 22'"""
+    return "embedded OCR layer recovered: " + ", ".join(notes)
+
+
 def convert_sources(
     root: Path,
     to_convert: list[Path],
@@ -155,7 +161,7 @@ def convert_sources(
                 _rel(root, out),
                 detail=f"{type(exc).__name__}: {exc}",
             )
-        return _finalize_sidecar(
+        result = _finalize_sidecar(
             root,
             src,
             hashes[rel],
@@ -163,6 +169,12 @@ def convert_sources(
             route_for(src),
             defer_commit=rel in defer_commit_rels,
         )
+
+        # The sidecar marker is the record; surface it in the run summary.
+        notes = recovery_notes(text)
+        if result.status == STATUS_CONVERTED and notes:
+            result = replace(result, detail=_recovery_detail(notes))
+        return result
 
     with ThreadPoolExecutor(max_workers=CONVERSION_MAX_WORKERS) as pool:
         futures = {pool.submit(_do_convert, src): src for src in to_convert}

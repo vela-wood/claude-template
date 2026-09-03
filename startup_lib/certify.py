@@ -251,6 +251,20 @@ def summarize(
         f"Indices written to {HASH_INDEX_FILENAME}, {TOKEN_INDEX_FILENAME}, "
         f"and {OCR_INDEX_FILENAME}"
     )
+    recovered = sorted(
+        (r for r in results if r.status == STATUS_CONVERTED and r.detail),
+        key=lambda r: r.source_rel,
+    )
+    if recovered:
+        print(
+            f"Notice: {len(recovered)} PDF(s) stored text only in an invisible OCR "
+            "layer on some pages, which AnyDoc drops. Those pages were recovered "
+            "from the embedded layer with PyMuPDF and are marked with an HTML "
+            "comment in the sidecar; the recovered text was not verified against "
+            "the page image:"
+        )
+        for r in recovered:
+            print(f"\t{r.source_rel}: {r.detail}")
     for r in results:
         if r.status == STATUS_FAILED:
             print(f"\tFAILED {r.source_rel}: {r.detail}")

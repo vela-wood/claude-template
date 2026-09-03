@@ -16,6 +16,7 @@ import pytest
 from conftest import (
     SIMPLE_EML,
     make_digital_pdf,
+    make_layered_pdf,
     make_malformed_pdf,
     make_scanned_pdf,
 )
@@ -80,6 +81,34 @@ def test_mbx_noticed_skipped_and_absent_from_indexes(repo_tmp, capsys):
     token_rows = {r["file"] for r in read_csv_dict(repo_tmp / ".token_index.csv")}
     assert hash_rows == {"real.eml"}
     assert token_rows == {"real.eml.md"}
+
+
+def test_invisible_layer_pdf_notice_exit_zero(repo_tmp, capsys):
+    hidden = "Hidden bravo page carried only in the OCR layer."
+    make_layered_pdf(
+        repo_tmp / "layered.pdf",
+        ["Alpha digital page with enough visible text.", hidden],
+        hidden={1},
+    )
+
+    assert run_main() == 0
+    out = capsys.readouterr().out
+    assert "Notice:" in out
+    assert "layered.pdf: embedded OCR layer recovered: page 2" in out
+    assert "1 converted, 0 unchanged, 0 failed, 0 deferred for OCR" in out
+    sidecar = (repo_tmp / "layered.pdf.md").read_text(encoding="utf-8")
+    assert hidden in sidecar
+    assert "<!-- page 2: text recovered from embedded OCR layer" in sidecar
+    (row,) = read_csv_dict(repo_tmp / ".ocr_index.csv")
+    assert row["verdict"] == "digital-text"
+    assert row["ocr_done"] == ""
+
+
+def test_digital_pdf_prints_no_notice(repo_tmp, capsys):
+    make_digital_pdf(repo_tmp / "digital.pdf", ["Plain digital page text here."])
+
+    assert run_main() == 0
+    assert "Notice:" not in capsys.readouterr().out
 
 
 def test_stale_mbx_index_rows_pruned_but_sidecar_untouched(repo_tmp):
