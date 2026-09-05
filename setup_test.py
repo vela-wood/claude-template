@@ -19,6 +19,7 @@ ENV_VARS = (
     EnvVarSpec("CAPTION_API_URL", "Caption API base URL", "url", required=True),
     EnvVarSpec("CAPTION_MEILI_URL", "Caption Meilisearch base URL", "url", required=True),
     EnvVarSpec("CLERK_API_KEY", "Clerk API key", "token", required=True),
+    EnvVarSpec("GEMINI_API_KEY", "Gemini API key (cloud OCR)", "token"),
     EnvVarSpec("MATTERS_DB", "NetDocs Postgres connection string", "dsn"),
     EnvVarSpec("ND_API_KEY", "NetDocs helper API key", "secret"),
     EnvVarSpec("NDHELPER_URL", "NetDocs helper base URL", "url"),
