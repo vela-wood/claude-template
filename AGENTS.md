@@ -33,7 +33,7 @@ Unless working on a pure coding task, run the below first. A pure coding task in
 
 1. **Convert files to markdown**
    - Use `uv run startup.py` 
-   - Do not run `uv run startup.py --ocr` without first asking the user. OCR can take a long time.
+   - Do not run `uv run startup.py --ocr` without first asking the user. OCR uploads every page image to Google (Gemini) and costs money.
 
 Then proceed to the main task.
 
@@ -79,9 +79,9 @@ It outputs:
 
 It also reports any PDFs that may need OCR. If OCR is needed, ask the user before running `uv run startup.py --ocr`. PDFs pending OCR are never sent to the generic PDF converter.
 
-OCR shells out to `focr` (Franken OCR), which is not installed by default. If `--ocr` reports that the command was not found, do not try to install it yourself: ask the user to run `uv run config.py` (human-only, see §4.7) and pick "Scanned-document reader (OCR)", which installs the tool and its ~4 GB model. `startup.py` finds `focr` on `PATH` or in the installer's own directories (`~/.local/bin`, `%LOCALAPPDATA%\Programs\focr`), so it works even before a terminal restart.
+OCR runs in Google's cloud with Gemini (`gemini-3.8-flash`, via `google-genai`) and needs `GEMINI_API_KEY` in the repo-root `.env`. If `--ocr` reports the key is missing, never create a key yourself: ask the user to run `uv run config.py` (human-only, see §4.7) and pick "Scanned-document reader (OCR)", which saves the key they paste, or to add the `GEMINI_API_KEY=...` line by hand (keys come from https://aistudio.google.com/apikey). Because pages leave the machine, get the user's consent per matter before running `--ocr`.
 
-`--ocr` rasterizes each pending PDF's pages and streams them through as few `focr ocr-batch` processes as the platform argv limit allows, printing progress as pages come back. Each PDF is written the moment its last page arrives, so an interrupt or a mid-batch crash keeps the PDFs that already finished and fails only the rest. By default it runs focr's experimental all-int8 decoder (~1.9x faster than the conservative recipe at 0.999 token similarity on the test corpus); the repo-root `settings.json` key `"ocr_int8": false` (a strict JSON boolean, like `"sidecar_dotfiles"`) reverts to the conservative recipe if a scan ever transcribes worse under it.
+`--ocr` rasterizes pages in a small pool of worker processes (200 dpi JPEG, in memory) and uploads them concurrently (64 requests in flight), printing progress and, at the end, a token/cost total with a per-stage timing breakdown and any transport retries. Each PDF is written the moment its last page arrives, so an interrupt or a failed page keeps the PDFs that already finished and fails only the rest. A page Gemini declines to transcribe (finish reason `RECITATION`, `SAFETY`, and the like; deterministic, so retrying cannot help) does not fail its PDF: the sidecar carries visible placeholder text `[page N not transcribed: Gemini declined (REASON)]` and the run prints a `Notice:` listing those pages. The sidecar starts with an HTML comment naming the model and date, and each page is preceded by `<!-- page N -->`. For targeted runs (one file, a folder, `--force`, `--thinking`, `--dry-run` cost estimate) use `uv run gemini_ocr.py PATH ...`, which writes the same sidecars and index rows.
 
 Do not edit source files while `startup.py` is running; changes made mid-run are detected and fail that file's conversion, and it is retried on the next run.
 

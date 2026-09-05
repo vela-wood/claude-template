@@ -24,6 +24,7 @@
   "permissions": {
     "allow": [
       "Bash(uv run startup.py:*)",
+      "Bash(uv run gemini_ocr.py:*)",
       "Bash(caption:*)",
       "Bash(uv run nd.py:*)",
       "Bash(uv tool install --force --python 3.13 \"caption-cli @ git+https://github.com/sec-chair/caption-cli.git\")",

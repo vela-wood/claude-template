@@ -422,7 +422,7 @@ def _convert_anydoc(source: Path) -> str:
 # A scanned PDF that went through an OCR pass carries its text in PDF render
 # mode 3 (invisible) under the page image. AnyDoc drops mode-3 text, so such
 # pages convert to nothing (or to a visible stamp alone), and pdfcheck counts
-# the invisible text as digital, so focr never runs either. PyMuPDF reads the
+# the invisible text as digital, so OCR never runs either. PyMuPDF reads the
 # layer: get_texttrace() spans carry `type` == render mode.
 #
 #   pages:   1   2   3   4   5   6          kind per page

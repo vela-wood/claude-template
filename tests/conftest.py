@@ -393,5 +393,43 @@ def repo_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["startup.py"])
     monkeypatch.setattr(repo_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr(startup_lib.common, "SIDECAR_DOTFILES", False)
-    monkeypatch.setattr(startup_lib.common, "OCR_INT8", True)
     return tmp_path
+
+
+class FakePageOcr:
+    """Gemini page-OCR stand-in: canned Markdown per call, records
+    concurrency, fails call k on demand. Shared by the startup.py --ocr and
+    gemini_ocr.py suites so neither touches the network."""
+
+    def __init__(
+        self,
+        fail_call: int | None = None,
+        error: Exception | None = None,
+        latency: float = 0.01,
+    ):
+        from startup_lib.gemini_client import PageFailed
+
+        self.latency = latency
+        self.calls = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.fail_call = fail_call
+        self.error = error or PageFailed("boom")
+
+    async def ocr_page(self, image: bytes):
+        import asyncio
+
+        from startup_lib.gemini_client import PageText
+
+        assert image[:2] == b"\xff\xd8", "expected JPEG bytes"
+        self.calls += 1
+        call = self.calls
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.latency)
+            if call == self.fail_call:
+                raise self.error
+            return PageText(f"Text of call {call}", 1000, 500)
+        finally:
+            self.in_flight -= 1

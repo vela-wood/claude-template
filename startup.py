@@ -83,8 +83,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ocr",
         action="store_true",
-        help="run focr on PDFs flagged needs_ocr (writes foo.pdf.md, tracked in "
-        f"{OCR_INDEX_FILENAME})",
+        help="OCR PDFs flagged needs_ocr with Gemini; page images are uploaded "
+        f"to Google (writes foo.pdf.md, tracked in {OCR_INDEX_FILENAME})",
     )
     return parser.parse_args()
 
@@ -96,7 +96,6 @@ def main() -> int:
     # silent mass rename, so fail loudly instead.
     try:
         common.SIDECAR_DOTFILES = repo_settings.read_sidecar_dotfiles()
-        common.OCR_INT8 = repo_settings.read_ocr_int8()
     except repo_settings.RepoSettingsError as exc:
         print(f"ERROR: invalid repo settings: {exc}")
         print("Fix or delete the repo-root settings.json, then re-run.")
@@ -176,11 +175,13 @@ def main() -> int:
             print(f"\t{rel}")
 
         # 4b. Pending-OCR PDFs never reach the generic converter. Without
-        # --ocr they are deferred (consent required); with --ocr they go
-        # through focr, and a requested-OCR failure stays a failure.
+        # --ocr they are deferred (consent required: pages are uploaded to
+        # Google); with --ocr they go through Gemini, and a requested-OCR
+        # failure stays a failure.
         if pending_ocr and not args.ocr:
             print(
-                "\tAsk the user before running `uv run startup.py --ocr`; OCR can take a long time."
+                "\tAsk the user before running `uv run startup.py --ocr`; "
+                "it uploads page images to Google (Gemini) and costs money."
             )
             results.extend(
                 ProcessingResult(rel, STATUS_DEFERRED_FOR_OCR, "ocr")
