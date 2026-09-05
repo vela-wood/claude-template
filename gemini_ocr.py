@@ -23,24 +23,21 @@ from netdocs.env import load_repo_dotenv
 from pdfcheck import NEEDS_OCR_VERDICTS, load_ocr_index
 from startup_lib import common
 from startup_lib.certify import persist_indexes, stage_results
-from startup_lib.common import (
-    STATUS_FAILED,
-    ProcessingResult,
-    converted_path,
-    other_style_path,
-)
+from startup_lib.common import STATUS_FAILED, converted_path, other_style_path
 from startup_lib.convert import classify_pdfs
 from startup_lib.discovery import discover_sources, hash_sources
 from startup_lib.gemini_client import ENV_KEY, MODEL, GeminiPageOcr, ThinkingLevel
 from startup_lib.gemini_ocr import (
     DEFAULT_CONCURRENCY,
+    MISSING_KEY_MESSAGE,
     OcrRun,
     estimate_cost_usd,
     format_totals,
+    interrupted_results,
     ocr_pdfs,
 )
 from startup_lib.indexes import load_hash_index, load_token_index
-from startup_lib.ocr import _Heartbeat
+from startup_lib.progress import Heartbeat
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -48,15 +45,6 @@ EXIT_NO_KEY = 2
 
 PDF_SUFFIX = ".pdf"
 _RATE_LIMIT_CODE = "429"
-
-SETUP_MESSAGE = f"""[MISSING] {ENV_KEY} is not set.
-
-Add this line to the .env file at the repo root (the user creates the key
-at https://aistudio.google.com/apikey; the agent must not create keys):
-  {ENV_KEY}=...
-Then re-run the command.
-"""
-
 
 class Scope(Enum):
     NEEDS_OCR = "needs_ocr"  # default: only PDFs classified as scans
@@ -203,20 +191,9 @@ def _print_dry_run(targets: list[str], ocr_index: dict[str, dict[str, str]]) -> 
         total += pages
         print(f"\t{rel}: {pages} page(s)")
     print(
-        f"Dry run: {len(targets)} PDF(s), {total} page(s) would be uploaded to "
-        f"Google ({MODEL}); estimated cost ${estimate_cost_usd(total):.3f}."
+        f"Dry run: {len(targets)} PDF(s), {total} page(s) would be processed with "
+        f"{MODEL}; estimated cost ${estimate_cost_usd(total):.2f}."
     )
-
-
-def _interrupted(targets: list[str], run: OcrRun) -> list[ProcessingResult]:
-    finished = {r.source_rel for r in run.results}
-    return [
-        ProcessingResult(
-            rel, STATUS_FAILED, "gemini-ocr", detail="interrupted before OCR finished"
-        )
-        for rel in targets
-        if rel not in finished
-    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     _load_env()
     key = os.environ.get(ENV_KEY, "").strip() or None
     if key is None and not args.dry_run:
-        print(SETUP_MESSAGE, file=sys.stderr)
+        print(MISSING_KEY_MESSAGE, file=sys.stderr)
         return EXIT_NO_KEY
 
     root = Path.cwd()
@@ -259,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     run = OcrRun(total_pages=sum(_page_count(ocr_index[rel]) for rel in targets))
-    interrupted: list[ProcessingResult] = []
+    interrupted = []
     if targets:
         level = ThinkingLevel(args.thinking)
         print(
@@ -267,12 +244,12 @@ def main(argv: list[str] | None = None) -> int:
             f"(concurrency {args.concurrency})..."
         )
         try:
-            with _Heartbeat("Gemini OCR still running"):
+            with Heartbeat("Gemini OCR still running"):
                 asyncio.run(
                     ocr_pdfs(root, targets, hashes, _make_client(key, level), args.concurrency, run)
                 )
         except KeyboardInterrupt:
-            interrupted = _interrupted(targets, run)
+            interrupted = interrupted_results(targets, run)
     else:
         print("Nothing to OCR.")
 

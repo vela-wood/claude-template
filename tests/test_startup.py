@@ -6,7 +6,6 @@ relying on operating-system permission behavior.
 """
 
 import csv
-import io
 import json
 import threading
 import time
@@ -15,6 +14,7 @@ from pathlib import Path
 import pytest
 from conftest import (
     SIMPLE_EML,
+    FakePageOcr,
     make_digital_pdf,
     make_layered_pdf,
     make_malformed_pdf,
@@ -418,42 +418,16 @@ def test_converter_concurrency_capped_at_four(repo_tmp, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _FakeFocrProc:
-    """subprocess.Popen stand-in for run_ocr's streaming read loop."""
+def _authorize_ocr(monkeypatch, fake=None):
+    """`--ocr` with a key present and the Gemini client replaced by a fake.
+    Returns the fake so tests can inspect calls."""
+    import sys
 
-    def __init__(self, stdout: str, returncode: int = 0):
-        self.stdout = io.StringIO(stdout)
-        self.returncode = returncode
-        self.terminated = False
-        self.waited = False
-
-    def wait(self):
-        self.waited = True
-        return self.returncode
-
-    def terminate(self):
-        self.terminated = True
-
-
-def _focr_images(cmd) -> list[str]:
-    return [arg for arg in cmd if str(arg).endswith(".png")]
-
-
-def _focr_wrapper_json(images, **kwargs) -> str:
-    """The wrapper object focr 0.7.2 emits, all at once, at exit."""
-    return json.dumps(
-        {
-            "results": [
-                {"image": img, "ok": True, "markdown": f"OCR text for {Path(img).name}"}
-                for img in images
-            ]
-        },
-        **kwargs,
-    )
-
-
-def _fake_focr_success(cmd, **kwargs):
-    return _FakeFocrProc(_focr_wrapper_json(_focr_images(cmd)))
+    fake = fake or FakePageOcr()
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(startup_lib.ocr, "_make_client", lambda key, level: fake)
+    return fake
 
 
 def test_pending_ocr_without_flag_is_deferred_exit_zero(repo_tmp, monkeypatch, capsys):
@@ -466,6 +440,7 @@ def test_pending_ocr_without_flag_is_deferred_exit_zero(repo_tmp, monkeypatch, c
     out = capsys.readouterr().out
     assert "0 converted, 0 unchanged, 0 failed, 1 deferred for OCR" in out
     assert "Ask the user before running" in out
+    assert "uploads page images to Google" in out  # consent covers the upload
     assert calls == []  # never fell through to the generic converter
     assert not (repo_tmp / "scan.pdf.md").exists()
     ocr_rows = read_csv_dict(repo_tmp / ".ocr_index.csv")
@@ -511,19 +486,22 @@ def test_requested_ocr_success_certifies_exactly_once(repo_tmp, monkeypatch, cap
     import sys
 
     make_scanned_pdf(repo_tmp / "scan.pdf", pages=2)
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    fake = _authorize_ocr(monkeypatch)
     calls = []
     monkeypatch.setattr(
         startup_lib.convert, "convert_to_markdown", lambda s: calls.append(s) or "x"
     )
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", _fake_focr_success)
 
     assert run_main() == 0
     out = capsys.readouterr().out
     assert "1 converted, 0 unchanged, 0 failed, 0 deferred for OCR" in out
+    assert "uploaded to Google" in out
     assert calls == []  # OCR-routed source never invokes the generic converter
+    assert fake.calls == 2
     sidecar = (repo_tmp / "scan.pdf.md").read_text(encoding="utf-8")
-    assert sidecar.count("OCR text for") == 2  # both pages, joined
+    assert sidecar.startswith("<!-- OCR by gemini-3.8-flash on ")
+    assert sidecar.count("Text of call") == 2  # both pages, joined in order
+    assert sidecar.index("<!-- page 1 -->") < sidecar.index("<!-- page 2 -->")
     ocr_rows = read_csv_dict(repo_tmp / ".ocr_index.csv")
     assert ocr_rows[0]["ocr_done"] == "true"
     token_rows = read_csv_dict(repo_tmp / ".token_index.csv")
@@ -540,22 +518,39 @@ def test_requested_ocr_success_certifies_exactly_once(repo_tmp, monkeypatch, cap
 def test_requested_ocr_failure_is_nonzero_and_never_falls_through(
     repo_tmp, monkeypatch, capsys
 ):
-    import sys
-
     make_scanned_pdf(repo_tmp / "scan.pdf")
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    _authorize_ocr(monkeypatch, FakePageOcr(fail_call=1))
     calls = []
     monkeypatch.setattr(
         startup_lib.convert, "convert_to_markdown", lambda s: calls.append(s) or "x"
     )
 
-    monkeypatch.setattr(
-        startup_lib.ocr.subprocess, "Popen", lambda cmd, **kw: _FakeFocrProc("", returncode=3)
-    )
     assert run_main() == 1
     out = capsys.readouterr().out
     assert "0 converted, 0 unchanged, 1 failed" in out
+    assert "page(s) failed: p1: boom" in out
     assert calls == []
+    assert not (repo_tmp / "scan.pdf.md").exists()
+    assert read_csv_dict(repo_tmp / ".ocr_index.csv")[0]["ocr_done"] == ""
+    assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
+
+
+def test_missing_key_fails_pending_and_never_uploads(repo_tmp, monkeypatch, capsys):
+    import sys
+
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        startup_lib.ocr, "_make_client",
+        lambda key, level: (_ for _ in ()).throw(AssertionError("client built without a key")),
+    )
+
+    assert run_main() == 1
+    out = capsys.readouterr().out
+    assert "GEMINI_API_KEY is not set" in out
+    assert "uv run config.py" in out
+    assert "0 converted, 0 unchanged, 1 failed" in out
     assert not (repo_tmp / "scan.pdf.md").exists()
     assert read_csv_dict(repo_tmp / ".ocr_index.csv")[0]["ocr_done"] == ""
     assert read_csv_dict(repo_tmp / ".hash_index.csv") == []
@@ -564,16 +559,11 @@ def test_requested_ocr_failure_is_nonzero_and_never_falls_through(
 def test_authorized_ocr_failure_keeps_preserved_unindexed_backup(
     repo_tmp, monkeypatch
 ):
-    import sys
-
     make_scanned_pdf(repo_tmp / "scan.pdf")
     unindexed = repo_tmp / "scan.pdf.md"
     unindexed.write_bytes(b"preserve before failed OCR")
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
+    _authorize_ocr(monkeypatch, FakePageOcr(fail_call=1))
 
-    monkeypatch.setattr(
-        startup_lib.ocr.subprocess, "Popen", lambda cmd, **kw: _FakeFocrProc("", returncode=7)
-    )
     assert run_main() == 1
     backups = preserved_backups(repo_tmp, "scan.pdf.md")
     assert len(backups) == 1
@@ -586,58 +576,28 @@ def test_authorized_ocr_failure_keeps_preserved_unindexed_backup(
 
 
 # ---------------------------------------------------------------------------
-# OCR streaming, chunking, and partial success
+# OCR partial success and interruption
 # ---------------------------------------------------------------------------
 
 
-def _ocr_two_scans(repo_tmp, monkeypatch):
-    """Two 2-page scanned PDFs queued for an authorized OCR run."""
-    import sys
-
+def _two_scans(repo_tmp):
+    """Two 2-page scanned PDFs, submitted in name order (one, two)."""
     make_scanned_pdf(repo_tmp / "one.pdf", pages=2)
     make_scanned_pdf(repo_tmp / "two.pdf", pages=2)
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
 
 
-def test_pretty_printed_focr_json_uses_whole_payload_fallback(
+def test_page_failure_keeps_completed_pdfs_and_fails_only_the_rest(
     repo_tmp, monkeypatch, capsys
 ):
-    """focr 0.7.2 buffers its payload and may indent it across lines: no
-    single line parses, so the whole-stdout parser must still finish."""
-    import sys
-
-    make_scanned_pdf(repo_tmp / "scan.pdf", pages=2)
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
-    monkeypatch.setattr(
-        startup_lib.ocr.subprocess,
-        "Popen",
-        lambda cmd, **kw: _FakeFocrProc(_focr_wrapper_json(_focr_images(cmd), indent=2)),
-    )
-
-    assert run_main() == 0
-    assert "1 converted, 0 unchanged, 0 failed" in capsys.readouterr().out
-    assert (repo_tmp / "scan.pdf.md").read_text(encoding="utf-8").count(
-        "OCR text for"
-    ) == 2
-
-
-def test_nonzero_exit_keeps_completed_pdfs_and_fails_only_the_rest(
-    repo_tmp, monkeypatch, capsys
-):
-    """A crash mid-batch must not throw away the PDFs already finished."""
-    _ocr_two_scans(repo_tmp, monkeypatch)
-
-    def partial_then_die(cmd, **kw):
-        images = _focr_images(cmd)
-        done = [img for img in images if "d0000-" in img]  # first PDF only
-        return _FakeFocrProc(_focr_wrapper_json(done), returncode=9)
-
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", partial_then_die)
+    """A failed page fails its own PDF; the PDFs that finished are kept."""
+    _two_scans(repo_tmp)
+    # pages are requested in submission order: one p1, one p2, two p1, ...
+    _authorize_ocr(monkeypatch, FakePageOcr(fail_call=3))
 
     assert run_main() == 1
     out = capsys.readouterr().out
     assert "1 converted, 0 unchanged, 1 failed" in out
-    assert "focr ocr-batch exited 9" in out
+    assert "ERROR OCRing two.pdf" in out
     assert (repo_tmp / "one.pdf.md").exists()
     assert not (repo_tmp / "two.pdf.md").exists()
     # the finished PDF is certified; the failed one keeps no OCR state
@@ -650,23 +610,19 @@ def test_interrupt_keeps_completed_pdfs_and_fails_the_rest(
     repo_tmp, monkeypatch, capsys
 ):
     """Ctrl+C: finished sidecars persist, the rest fail, exit is nonzero."""
-    _ocr_two_scans(repo_tmp, monkeypatch)
+    from startup_lib.convert import _finalize_sidecar
 
-    class InterruptingProc(_FakeFocrProc):
-        def __init__(self, cmd, **kw):
-            done = [img for img in _focr_images(cmd) if "d0000-" in img]
-            super().__init__(_focr_wrapper_json(done))
-            self._lines = list(self.stdout)
-            self.stdout = self
+    _two_scans(repo_tmp)
+    _authorize_ocr(monkeypatch)
 
-        def __iter__(self):
-            yield from self._lines
-            raise KeyboardInterrupt
+    async def finish_one_then_interrupt(root, rels, hashes, client, concurrency, run, defer):
+        rel = rels[0]
+        run.results.append(
+            _finalize_sidecar(root, root / rel, hashes[rel], "one page", "gemini-ocr", ocr_done=True)
+        )
+        raise KeyboardInterrupt
 
-        def close(self):
-            pass
-
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", InterruptingProc)
+    monkeypatch.setattr(startup_lib.ocr, "ocr_pdfs", finish_one_then_interrupt)
 
     assert run_main() == 1
     out = capsys.readouterr().out
@@ -677,98 +633,20 @@ def test_interrupt_keeps_completed_pdfs_and_fails_the_rest(
     assert [r["file"] for r in read_csv_dict(repo_tmp / ".hash_index.csv")] == ["one.pdf"]
 
 
-def test_argv_budget_splits_pages_across_focr_batches(repo_tmp, monkeypatch, capsys):
-    """Over the argv budget the pages split into several processes, and
-    every PDF still completes."""
-    _ocr_two_scans(repo_tmp, monkeypatch)
-    monkeypatch.setattr(
-        startup_lib.ocr, "_ARGV_CHAR_BUDGET", 1)  # one page per chunk
+def test_run_ocr_passes_deferred_commits_to_the_driver(repo_tmp, monkeypatch):
+    """Migration may ask for a sidecar commit to be deferred; that set must
+    reach the driver, which threads it into _finalize_sidecar."""
+    make_scanned_pdf(repo_tmp / "scan.pdf")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(startup_lib.ocr, "_make_client", lambda key, level: FakePageOcr())
+    seen = {}
 
-    commands = []
+    async def record(root, rels, hashes, client, concurrency, run, defer):
+        seen["defer"] = defer
 
-    def recording_popen(cmd, **kw):
-        commands.append(_focr_images(cmd))
-        return _fake_focr_success(cmd, **kw)
-
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", recording_popen)
-
-    assert run_main() == 0
-    assert "2 converted, 0 unchanged, 0 failed" in capsys.readouterr().out
-    assert [len(c) for c in commands] == [1, 1, 1, 1]  # 2 PDFs × 2 pages
-    assert (repo_tmp / "one.pdf.md").read_text(encoding="utf-8").count("OCR text for") == 2
-    assert (repo_tmp / "two.pdf.md").read_text(encoding="utf-8").count("OCR text for") == 2
-
-
-def test_chunker_prefers_pdf_boundaries_and_splits_oversized_pdfs():
-    pages = {
-        "a.pdf": [Path("aaaa"), Path("aaaa")],  # 5 chars each with the separator
-        "b.pdf": [Path("bbbb")],
-    }
-    assert startup_lib.ocr._chunk_pages(pages, budget=100) == [
-        [Path("aaaa"), Path("aaaa"), Path("bbbb")]
-    ]
-    # a.pdf alone exceeds the budget → boundary before b.pdf, never inside it
-    assert startup_lib.ocr._chunk_pages(pages, budget=12) == [
-        [Path("aaaa"), Path("aaaa")],
-        [Path("bbbb")],
-    ]
-    # a single PDF larger than the whole budget is split internally
-    assert startup_lib.ocr._chunk_pages(pages, budget=5) == [
-        [Path("aaaa")],
-        [Path("aaaa")],
-        [Path("bbbb")],
-    ]
-
-
-def test_focr_env_defaults_never_override_the_user(monkeypatch):
-    monkeypatch.delenv("FOCR_NO_PROGRESS", raising=False)
-    assert startup_lib.ocr._focr_env()["FOCR_NO_PROGRESS"] == "1"
-    monkeypatch.setenv("FOCR_NO_PROGRESS", "0")
-    assert startup_lib.ocr._focr_env()["FOCR_NO_PROGRESS"] == "0"
-
-
-def test_ocr_int8_setting_drives_both_the_env_and_the_flag(monkeypatch):
-    """The all-int8 decoder needs the env keys and the flag together."""
-    for key in startup_lib.ocr._FOCR_INT8_ENV:
-        monkeypatch.delenv(key, raising=False)
-
-    monkeypatch.setattr(
-        startup_lib.common, "OCR_INT8", True)
-    env = startup_lib.ocr._focr_env()
-    assert all(env[key] == "1" for key in startup_lib.ocr._FOCR_INT8_ENV)
-    assert startup_lib.ocr._focr_argv("focr", [Path("p.png")]) == [
-        "focr", "ocr-batch", "p.png", "--json", "--experimental-full-int8"
-    ]
-
-    monkeypatch.setattr(
-        startup_lib.common, "OCR_INT8", False)
-    env = startup_lib.ocr._focr_env()
-    assert not any(key in env for key in startup_lib.ocr._FOCR_INT8_ENV)
-    assert startup_lib.ocr._focr_argv("focr", [Path("p.png")]) == [
-        "focr", "ocr-batch", "p.png", "--json"
-    ]
-
-
-def test_ocr_int8_false_in_settings_reaches_the_focr_command(
-    repo_tmp, monkeypatch, capsys
-):
-    import sys
-
-    make_scanned_pdf(repo_tmp / "scan.pdf", pages=1)
-    (repo_tmp / "settings.json").write_text(
-        json.dumps({"ocr_int8": False}), encoding="utf-8"
-    )
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
-    commands = []
-
-    def recording_popen(cmd, **kw):
-        commands.append(list(cmd))
-        return _fake_focr_success(cmd, **kw)
-
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", recording_popen)
-    assert run_main() == 0
-    assert "1 converted" in capsys.readouterr().out
-    assert startup_lib.ocr._FOCR_INT8_FLAG not in commands[0]
+    monkeypatch.setattr(startup_lib.ocr, "ocr_pdfs", record)
+    startup_lib.ocr.run_ocr(repo_tmp, ["scan.pdf"], {"scan.pdf": "h"}, {"scan.pdf"})
+    assert seen["defer"] == {"scan.pdf"}
 
 
 # ---------------------------------------------------------------------------
@@ -1689,8 +1567,7 @@ def _ocr_convert_scan(repo_tmp, monkeypatch, capsys):
     import sys
 
     make_scanned_pdf(repo_tmp / "scan.pdf", pages=2)
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", _fake_focr_success)
+    _authorize_ocr(monkeypatch)
     assert run_main() == 0
     monkeypatch.setattr(sys, "argv", ["startup.py"])
     capsys.readouterr()
@@ -1772,13 +1649,10 @@ def test_needs_ocr_lost_done_does_not_retokenize_or_certify(
 def test_single_unindexed_needs_ocr_sidecar_preserved_before_authorized_ocr(
     repo_tmp, monkeypatch
 ):
-    import sys
-
     make_scanned_pdf(repo_tmp / "scan.pdf")
     unindexed = repo_tmp / "scan.pdf.md"
     unindexed.write_bytes(b"unindexed scan notes")
-    monkeypatch.setattr(sys, "argv", ["startup.py", "--ocr"])
-    monkeypatch.setattr(startup_lib.ocr.subprocess, "Popen", _fake_focr_success)
+    _authorize_ocr(monkeypatch)
 
     assert run_main() == 0
     backups = preserved_backups(repo_tmp, "scan.pdf.md")

@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_digital_pdf, make_scanned_pdf
+from conftest import FakePageOcr, make_digital_pdf, make_scanned_pdf
 
 import gemini_ocr
 import startup
@@ -21,6 +21,7 @@ import startup_lib.gemini_ocr as driver
 from startup_lib.gemini_client import (
     IMAGE_MIME,
     GeminiPageOcr,
+    PageBlocked,
     PageFailed,
     PageText,
     ThinkingLevel,
@@ -31,31 +32,6 @@ from startup_lib.gemini_client import _strip_fence
 def read_csv_dict(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
-
-
-class FakePageOcr:
-    """Canned Markdown per call; records concurrency; fails page k on demand."""
-
-    def __init__(self, fail_call: int | None = None, error: Exception | None = None):
-        self.calls = 0
-        self.in_flight = 0
-        self.max_in_flight = 0
-        self.fail_call = fail_call
-        self.error = error or PageFailed("boom")
-
-    async def ocr_page(self, image: bytes) -> PageText:
-        assert image[:2] == b"\xff\xd8", "expected JPEG bytes"
-        self.calls += 1
-        call = self.calls
-        self.in_flight += 1
-        self.max_in_flight = max(self.max_in_flight, self.in_flight)
-        try:
-            await asyncio.sleep(0.01)
-            if call == self.fail_call:
-                raise self.error
-            return PageText(f"Text of call {call}", 1000, 500)
-        finally:
-            self.in_flight -= 1
 
 
 @pytest.fixture
@@ -155,6 +131,8 @@ def test_page_failure_fails_file_only(gemini_env):
 def test_concurrency_bounds_in_flight(gemini_env):
     root, state = gemini_env
     make_scanned_pdf(root / "scan.pdf", pages=6)
+    # Slower than rasterizing, so requests queue up and hit the bound.
+    state["fake"] = FakePageOcr(latency=0.5)
 
     assert gemini_ocr.main(["scan.pdf", "--concurrency", "2"]) == 0
     assert state["fake"].max_in_flight == 2
@@ -292,6 +270,31 @@ def test_gemini_client_max_tokens_twice_fails(monkeypatch):
     assert "MAX_TOKENS" in info.value.detail
     assert not info.value.fatal
     assert len(sdk.requests) == 2
+
+
+def test_gemini_client_recitation_is_blocked(monkeypatch):
+    sdk = FakeSdk([_response("", reason="RECITATION"), _response("", reason="RECITATION")])
+    monkeypatch.setattr("startup_lib.gemini_client.make_client", lambda key: sdk)
+    ocr = GeminiPageOcr("k", ThinkingLevel.LOW)
+
+    with pytest.raises(PageBlocked) as info:
+        asyncio.run(ocr.ocr_page(b"\xff\xd8"))
+    assert info.value.reason == "RECITATION"
+    assert len(sdk.requests) == 2
+
+
+def test_blocked_page_keeps_file_with_placeholder(gemini_env, capsys):
+    root, state = gemini_env
+    make_scanned_pdf(root / "scan.pdf", pages=3)
+    state["fake"] = FakePageOcr(fail_call=2, error=PageBlocked("RECITATION"))
+
+    assert gemini_ocr.main(["scan.pdf"]) == 0
+    text = (root / "scan.pdf.md").read_text()
+    assert "[page 2 not transcribed: Gemini declined (RECITATION)]" in text
+    assert "Text of call 1" in text and "Text of call 3" in text
+    out = capsys.readouterr().out
+    assert "Notice: scan.pdf: Gemini declined p2 (RECITATION)" in out
+    assert "1 page(s) not transcribed" in out
 
 
 def test_gemini_client_401_is_fatal(monkeypatch):

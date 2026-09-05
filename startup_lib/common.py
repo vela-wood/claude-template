@@ -1,9 +1,9 @@
 """Values and helpers every startup_lib module shares.
 
-SIDECAR_DOTFILES and OCR_INT8 are the two mutable repo preferences:
-startup.main() writes them here from settings.json before any other module
-runs, and every consumer reads them through this module's namespace so
-there is exactly one authority (and one monkeypatch target) per setting.
+SIDECAR_DOTFILES is the one mutable repo preference: startup.main() writes
+it here from settings.json before any other module runs, and every consumer
+reads it through this module's namespace so there is exactly one authority
+(and one monkeypatch target).
 """
 
 import zlib
@@ -31,10 +31,6 @@ CONVERSION_MAX_WORKERS = 4
 # Sidecar naming style; main() sets this from the repo settings.json
 # (repo_settings.read_sidecar_dotfiles) before any index load.
 SIDECAR_DOTFILES = False
-
-# focr's experimental all-int8 decoder for --ocr; main() sets this from
-# the repo settings.json (repo_settings.read_ocr_int8).
-OCR_INT8 = True
 
 # Create tiktoken encoding once at module level (thread-safe, Rust-backed)
 _encoding = tiktoken.get_encoding("cl100k_base")

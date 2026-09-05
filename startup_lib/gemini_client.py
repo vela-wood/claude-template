@@ -4,6 +4,9 @@ The only module that imports google.genai. Everything above it works with
 PageText/PageFailed and never sees the SDK's request or response shapes.
 """
 
+import logging
+import re
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 
@@ -12,6 +15,7 @@ from google.genai import errors, types
 
 MODEL = "gemini-3.8-flash"
 ENV_KEY = "GEMINI_API_KEY"
+KEY_URL = "https://aistudio.google.com/apikey"  # where the user creates one
 IMAGE_MIME = "image/jpeg"
 
 # Gemini 3 charges a fixed token count per image part regardless of its
@@ -33,12 +37,37 @@ _RETRY_OPTIONS = types.HttpRetryOptions(
     http_status_codes=[408, 429, 500, 502, 503, 504],
 )
 
+# The SDK logs one INFO line per retry sleep ("... as it raised
+# ClientError: 429 RESOURCE_EXHAUSTED ..."); counting them is the only way
+# to see throttling, which otherwise shows up only as a long latency tail.
+_RETRY_LOGGER = "google_genai._api_client"
+_RETRY_STATUS_RE = re.compile(r"\b(4\d\d|5\d\d)\b")
+_RETRY_UNKNOWN = "other"
+
+
+class _RetryCounter(logging.Handler):
+    """Tallies SDK retry sleeps by HTTP status code."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.by_status: Counter[str] = Counter()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        match = _RETRY_STATUS_RE.search(record.getMessage())
+        self.by_status[match.group(1) if match else _RETRY_UNKNOWN] += 1
+
+
 # A bad key fails every page the same way; abort the run instead of
 # paying for and reporting hundreds of identical failures.
 _FATAL_HTTP_CODES = frozenset({401, 403})
 
 # App-level retry for MAX_TOKENS, blocked, or blank responses.
 _PAGE_ATTEMPTS = 2
+
+# Finish reasons where Gemini declines to return the page's text. Measured
+# deterministic (2026-09-05: RECITATION on three insurance/garnishment
+# boilerplate pages, unchanged by thinking level, prompt, or a second try).
+_BLOCK_REASONS = frozenset({"RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"})
 
 # Promotional pricing at GA (2026-09); used for the run totals only.
 USD_PER_M_INPUT = 0.75
@@ -90,6 +119,15 @@ class PageFailed(Exception):
         self.fatal = fatal
 
 
+class PageBlocked(Exception):
+    """Gemini declined to return this page's text (content block, not an
+    error): retrying cannot help, so the caller records a placeholder."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 def make_client(api_key: str) -> genai.Client:
     """Test seam: monkeypatched to return a fake SDK client."""
     http_options = types.HttpOptions(
@@ -137,6 +175,15 @@ class GeminiPageOcr:
     def __init__(self, api_key: str, level: ThinkingLevel):
         self._client = make_client(api_key)
         self._config = _request_config(level)
+        self._retries = _RetryCounter()
+        logger = logging.getLogger(_RETRY_LOGGER)
+        logger.addHandler(self._retries)
+        if logger.level == logging.NOTSET or logger.level > logging.INFO:
+            logger.setLevel(logging.INFO)
+
+    def retries(self) -> dict[str, int]:
+        """Transport retries so far, keyed by HTTP status ('429': 12)."""
+        return dict(self._retries.by_status)
 
     async def ocr_page(self, image: bytes) -> PageText:
         last_reason = "empty response"
@@ -157,6 +204,8 @@ class GeminiPageOcr:
                 return page
             last_reason = _finish_reason(response)
 
+        if last_reason in _BLOCK_REASONS:
+            raise PageBlocked(last_reason)
         raise PageFailed(
             f"no usable text after {_PAGE_ATTEMPTS} attempts ({last_reason})"
         )

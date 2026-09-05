@@ -1,220 +1,68 @@
-"""OCR task: install Franken OCR (the `focr` command) and its model.
+"""OCR task: store the Gemini API key that `startup.py --ocr` needs.
 
-`uv run startup.py --ocr` shells out to `focr` (see startup.run_ocr). That
-binary is not a Python dependency and cannot be installed by uv — upstream
-ships prebuilt binaries through an install script per platform, and the
-model weights are a separate ~4 GB download (`focr pull`). This module owns
-locating both, and building the commands that install them. Pure helpers;
-no TUI here (the screen lives in config/app.py).
-
-Layout the upstream installers use, and that find_focr/model_cache_dir
-mirror so a fresh install is found even when its directory is not yet on
-PATH in the running process:
-
-    binary   POSIX:   ~/.local/bin/focr        (PREFIX/bin with PREFIX set)
-             Windows: %LOCALAPPDATA%\\Programs\\focr\\focr.exe
-    model    POSIX:   ~/.cache/franken_ocr/*.focrq
-             Windows: %LOCALAPPDATA%\\franken_ocr\\*.focrq
+OCR runs in Google's cloud (startup_lib/gemini_ocr.py): every page image
+of a scanned PDF is uploaded, so the only setup is a key in the repo-root
+.env. The user creates the key at KEY_URL and pastes it here; nothing is
+ever fetched or installed. Pure helpers; no TUI (the screen lives in
+config/app.py).
 """
 from __future__ import annotations
 
-import os
-import shutil
-import sys
 from pathlib import Path
 
-import httpx
+from startup_lib.gemini_client import ENV_KEY, KEY_URL, MODEL
 
-from .common import SetupError
+from .common import ENV_FILE, SetupError
+from .env import WriteResult, read_existing_env_values, write_env_file
 
-INSTALL_SH_URL = (
-    "https://raw.githubusercontent.com/Dicklesworthstone/franken_ocr/main/install.sh"
-)
-INSTALL_PS1_URL = (
-    "https://raw.githubusercontent.com/Dicklesworthstone/franken_ocr/main/install.ps1"
-)
-PROJECT_URL = "https://github.com/Dicklesworthstone/franken_ocr"
-
-# Pinned focr release, passed to the installers as -Version / --version.
-# Without a pin the installers resolve GitHub's "latest release", which is
-# whichever release was *created* most recently — and the upstream repo
-# publishes model-asset releases (e.g. `models-unlimited-wasm-v1`) in the
-# same feed, so the default resolution can land on a tag that is not a
-# program version and abort. Bump deliberately after vetting a new release.
-FOCR_VERSION = "v0.7.2"
-
-# What `focr pull` downloads: the int8 weights plus tokenizer.
-MODEL_DOWNLOAD_SIZE = "about 4 GB"
-
-STATE_MISSING = "missing"  # no focr binary
-STATE_NO_MODEL = "no-model"  # binary present, weights not downloaded
+STATE_MISSING = "missing"  # no key in .env
 STATE_READY = "ready"
 
 
-def _is_windows() -> bool:
-    # Module-attribute call sites let tests fake the platform.
-    return sys.platform == "win32"
+def configured_key(env_file: Path = ENV_FILE) -> str | None:
+    """The key python-dotenv will load: the last non-blank value in .env."""
+    values = [v.strip() for v in read_existing_env_values(env_file).get(ENV_KEY, [])]
+    values = [v for v in values if v]
+    return values[-1] if values else None
 
 
-def _local_app_data() -> Path | None:
-    """%LOCALAPPDATA%, with the installers' own USERPROFILE fallback."""
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local)
-    profile = os.environ.get("USERPROFILE")
-    if profile:
-        return Path(profile) / "AppData" / "Local"
-    return None
+def ocr_state(env_file: Path = ENV_FILE) -> str:
+    """STATE_MISSING | STATE_READY."""
+    return STATE_READY if configured_key(env_file) else STATE_MISSING
 
 
-def binary_name() -> str:
-    return "focr.exe" if _is_windows() else "focr"
+def validate_key(raw: str) -> str:
+    """Trim and sanity-check a pasted key; the API is the real check."""
+    key = raw.strip()
+    if not key:
+        raise SetupError("Please paste your Gemini API key first.")
+    if any(ch.isspace() for ch in key):
+        raise SetupError("A key has no spaces in it. Check that you copied only the key.")
+    return key
 
 
-def install_dirs() -> list[Path]:
-    """Directories an installer may have put the binary in, most likely
-    first. Searched only after PATH."""
-    if _is_windows():
-        local = _local_app_data()
-        return [local / "Programs" / "focr"] if local else []
-    dirs = [Path.home() / ".local" / "bin"]
-    prefix = os.environ.get("PREFIX")
-    if prefix:
-        dirs.append(Path(prefix) / "bin")
-    dirs += [Path("/usr/local/bin"), Path("/opt/homebrew/bin")]
-    return dirs
+def save_key(key: str, env_file: Path = ENV_FILE) -> WriteResult:
+    """Append the key to .env. A different existing value is not edited in
+    place; the new line is appended and wins, since dotenv keeps the last."""
+    return write_env_file(env_file, {ENV_KEY: key})
 
 
-def find_focr() -> str | None:
-    """Absolute path to a runnable `focr`, or None.
-
-    PATH first, then the installers' default directories: on POSIX the
-    installer only edits shell rc files, so a freshly installed binary is
-    not on PATH in this process (nor in an already-open terminal), and on
-    Windows the user PATH edit does not reach processes already running.
-    """
-    found = shutil.which(binary_name())
-    if found:
-        return found
-    for directory in install_dirs():
-        candidate = directory / binary_name()
-        if candidate.is_file():
-            return str(candidate)
-    return None
-
-
-def model_cache_dir() -> Path:
-    """Where `focr pull` writes the weights."""
-    if _is_windows():
-        local = _local_app_data()
-        base = local if local else Path.home() / "AppData" / "Local"
-        return base / "franken_ocr"
-    return Path.home() / ".cache" / "franken_ocr"
-
-
-def model_installed() -> bool:
-    """True when at least one model artifact (`*.focrq`) is downloaded.
-    Named models land in a `models/` subdirectory, so the search recurses."""
-    cache = model_cache_dir()
-    try:
-        return any(cache.rglob("*.focrq"))
-    except OSError:
-        return False
-
-
-def ocr_state() -> str:
-    """STATE_MISSING | STATE_NO_MODEL | STATE_READY."""
-    if find_focr() is None:
-        return STATE_MISSING
-    return STATE_READY if model_installed() else STATE_NO_MODEL
-
-
-def installer_url() -> str:
-    return INSTALL_PS1_URL if _is_windows() else INSTALL_SH_URL
-
-
-def installer_filename() -> str:
-    return "install.ps1" if _is_windows() else "install.sh"
-
-
-def installer_command(script: Path) -> list[str]:
-    """Run a downloaded installer script non-interactively.
-
-    `--no-pull` / `-NoPull`: the model download is our own next step, so the
-    installer should not also prompt for it. `--easy-mode` puts ~/.local/bin
-    on PATH in the user's shell rc files (the POSIX installer otherwise only
-    prints advice); the Windows installer already edits the user PATH.
-    `--no-gum` keeps output plain for the log pane. `--version` / `-Version`
-    pins the release to FOCR_VERSION (see its comment for why the installers'
-    own latest-release lookup can't be trusted).
-    """
-    if _is_windows():
-        return [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            "-NoPull",
-            "-Version",
-            FOCR_VERSION,
-        ]
-    return [
-        "bash",
-        str(script),
-        "--easy-mode",
-        "--no-pull",
-        "--no-gum",
-        "--version",
-        FOCR_VERSION,
-    ]
-
-
-def pull_command(focr: str) -> list[str]:
-    """Download the model weights. Idempotent: an already-present artifact
-    is left alone, so this is safe to re-run."""
-    return [focr, "pull"]
-
-
-def download_installer(dest_dir: Path, *, timeout: float = 30.0) -> Path:
-    """Fetch the platform installer into dest_dir and return its path.
-
-    Downloaded to a file rather than piped into a shell so that the script
-    can take flags, and so a failed download never reaches an interpreter.
-    """
-    url = installer_url()
-    path = Path(dest_dir) / installer_filename()
-    try:
-        response = httpx.get(url, timeout=timeout, follow_redirects=True)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise SetupError(
-            "Couldn't download the text-recognition installer. Check your "
-            f"internet connection and try again. ({exc})"
-        )
-    path.write_bytes(response.content)
-    try:
-        path.chmod(0o700)
-    except OSError:
-        pass  # the script is run through bash/powershell, not the execute bit
-    return path
-
-
-def status_row(state: str, focr: str | None) -> tuple[str, str]:
+def status_row(state: str) -> tuple[str, str]:
     """The hub row for this task, as (status, detail) columns."""
     if state == STATE_MISSING:
         return "Not set up", "scanned PDFs can't be read yet"
-    if state == STATE_NO_MODEL:
-        return (
-            "Needs attention",
-            "the reader is installed but its "
-            f"{MODEL_DOWNLOAD_SIZE} model hasn't been downloaded yet",
-        )
-    on_path = shutil.which(binary_name()) is not None
-    if not on_path:
-        return (
-            "Ready",
-            f"installed at {focr} (restart your terminal to use `focr` directly)",
-        )
-    return "Ready", "scanned PDFs can be read"
+    return "Ready", f"scanned PDFs are read with {MODEL}"
+
+
+__all__ = [
+    "ENV_KEY",
+    "KEY_URL",
+    "MODEL",
+    "STATE_MISSING",
+    "STATE_READY",
+    "configured_key",
+    "ocr_state",
+    "save_key",
+    "status_row",
+    "validate_key",
+]

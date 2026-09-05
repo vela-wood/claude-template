@@ -12,9 +12,6 @@ Known keys:
 - "sidecar_dotfiles": bool — dot-prefixed markdown sidecars
   (.foo.docx.md) instead of the default visible style (foo.docx.md).
   Default false = current behavior.
-- "ocr_int8": bool — run focr's experimental all-int8 decoder for
-  `startup.py --ocr`. Default true (~1.9x faster at 0.999 similarity);
-  false falls back to focr's conservative recipe.
 """
 
 from __future__ import annotations
@@ -93,11 +90,3 @@ def read_sidecar_dotfiles(path: Path | None = None) -> bool:
     dotfile-style repo would trigger a silent mass rename, so this read is
     strict (see _read_bool)."""
     return _read_bool("sidecar_dotfiles", False, path)
-
-
-def read_ocr_int8(path: Path | None = None) -> bool:
-    """Use focr's experimental all-int8 decoder for --ocr? Default true:
-    on the OCR corpus it ran ~1.9x faster than focr's conservative recipe
-    at 0.999 token similarity. Set false to fall back if a scan ever
-    transcribes worse under it."""
-    return _read_bool("ocr_int8", True, path)

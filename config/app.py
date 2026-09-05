@@ -11,10 +11,9 @@ run it) with three independent tasks:
    removed on install. The same task installs the usage-guard hooks
    (config/guard.py) into the repo's .claude/settings.local.json
    (LOCAL_SETTINGS_PATH — gitignored, per-machine).
-4. Scanned-document reader → the `focr` binary and its model weights,
-   installed into the user's home by upstream's own installer (config/ocr.py).
-   This is the only task that downloads gigabytes, and it never starts
-   without the user pressing the install button.
+4. Scanned-document reader → the Gemini API key `startup.py --ocr` needs,
+   saved into the repo-root .env (config/ocr.py). OCR uploads page images
+   to Google, so the screen says so before the key is saved.
 
 Run with `uv run config.py` (a thin launcher for this module).
 TUI-only; no plain fallback.
@@ -23,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -58,17 +56,14 @@ from .guard import (
     prepare_guard_hooks,
 )
 from .ocr import (
-    MODEL_DOWNLOAD_SIZE,
-    STATE_NO_MODEL,
+    ENV_KEY,
+    KEY_URL,
+    MODEL,
     STATE_READY,
-    binary_name,
-    download_installer,
-    find_focr,
-    installer_command,
-    model_installed,
     ocr_state,
-    pull_command,
+    save_key,
     status_row,
+    validate_key,
 )
 from .statusline import (
     build_statusline_command,
@@ -234,7 +229,7 @@ def hub_status(repo_root: Path) -> dict[str, tuple[str, str]]:
     except Exception as exc:
         rows["statusline"] = (STATUS_PROBLEM, f"couldn't check this item ({exc})")
     try:
-        rows["ocr"] = status_row(ocr_state(), find_focr())
+        rows["ocr"] = status_row(ocr_state())
     except Exception as exc:
         rows["ocr"] = (STATUS_PROBLEM, f"couldn't check this item ({exc})")
     return rows
@@ -294,7 +289,6 @@ from textual.widgets import (  # noqa: E402
     OptionList,
     RadioButton,
     RadioSet,
-    RichLog,
     Static,
 )
 from textual.widgets.option_list import Option  # noqa: E402
@@ -767,182 +761,66 @@ class StatusLineScreen(TaskScreen["str | None"]):
 
 
 class OcrScreen(TaskScreen["str | None"]):
-    """Install the scanned-document reader, streaming installer output into
-    a log pane. Result: a summary to notify with, or None when the user
-    backed out without installing anything.
-
-    Nothing runs until the install button is pressed: this is the one task
-    that downloads gigabytes, so opening the screen must stay free."""
+    """Masked Gemini API key entry. Result: the validated key, or None when
+    the user backed out. Nothing is saved here; the caller writes .env."""
 
     CSS = """
-    #box { width: 100; }
-    #log { height: 12; border: round $panel; margin-bottom: 1; }
-    #loading { height: 1; }
+    #box { width: 90; }
+    #key-link { margin-left: 3; }
+    #link-hint { margin: 0 0 1 3; color: $text-muted; }
     """
-
-    def __init__(self, state: str) -> None:
-        super().__init__()
-        self._state = state
-        self._busy = False
-
-    def _plan_text(self) -> str:
-        if self._state == STATE_NO_MODEL:
-            return (
-                "The reader itself is installed, but its model still needs "
-                f"downloading ({MODEL_DOWNLOAD_SIZE})."
-            )
-        return (
-            "This installs the reader (Franken OCR) from its official "
-            "installer, then downloads its model "
-            f"({MODEL_DOWNLOAD_SIZE}). It runs on this computer — no "
-            "documents are sent anywhere."
-        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with Vertical(id="box"):
             yield Static(
                 "Scanned-document reader (OCR) — some PDFs are pictures of "
-                "pages with no text in them. This reader turns those "
-                "pictures into text so documents can be read.\n\n"
-                + self._plan_text()
-                + "\n\nThe download is large and can take a while. You need "
-                "to be online, and you can leave this window open while it "
-                "works."
+                "pages with no text in them. The reader turns those pictures "
+                f"into text using Google's {MODEL} model.\n\n"
+                "Each page image is uploaded to Google when OCR runs, and "
+                "Google bills your account per page. OCR never runs without "
+                "being asked for explicitly.\n\n"
+                "1. Create an API key in your browser:"
             )
-            log = RichLog(id="log", markup=False, wrap=True, max_lines=500)
-            log.display = False
-            yield log
-            loading = LoadingIndicator(id="loading")
-            loading.display = False
-            yield loading
+            yield Link(
+                KEY_URL,
+                url=KEY_URL,
+                tooltip="Opens this page in your web browser",
+                id="key-link",
+            )
+            yield Static(
+                "(click the link, or copy and paste it into your browser)",
+                id="link-hint",
+            )
+            yield Static("2. Paste the key below and press Save.")
+            yield Input(password=True, placeholder="Paste your Gemini API key here", id="key")
             yield Static("", id="error")
             with Horizontal():
-                yield Button(
-                    "Download the model"
-                    if self._state == STATE_NO_MODEL
-                    else "Download and install",
-                    id="apply",
-                    variant="primary",
-                )
+                yield Button("Save", id="submit", variant="primary")
                 yield Button("Cancel", id="cancel")
         yield Footer()
 
-    def _set_busy(self, busy: bool) -> None:
-        self._busy = busy
-        self.query_one("#loading", LoadingIndicator).display = busy
-        self.query_one("#apply", Button).disabled = busy
-        # Leaving mid-install would orphan the installer, so the way out is
-        # closed until it finishes.
-        self.query_one("#cancel", Button).disabled = busy
+    def on_mount(self) -> None:
+        self.query_one("#key", Input).focus()
 
     def _show_error(self, message: str) -> None:
         self.query_one("#error", Static).update(message)
 
-    def _append(self, line: str) -> None:
-        log = self.query_one("#log", RichLog)
-        log.display = True
-        log.write(line)
-
-    def action_cancel(self) -> None:
-        if self._busy:
-            return
-        self.finish(None)
-
-    async def _stream(self, command: list[str]) -> int:
-        """Run a command, echoing its output into the log; returns its exit
-        code. Output is read in chunks and split on \\r as well as \\n so a
-        progress bar that never emits a newline still shows up."""
-        self._append("$ " + " ".join(command))
+    def _submit(self) -> None:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                stdin=asyncio.subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            raise SetupError(f"Couldn't start {command[0]} ({exc}).")
-        buffer = ""
-        while True:
-            chunk = await proc.stdout.read(1024)
-            if not chunk:
-                break
-            buffer += chunk.decode("utf-8", errors="replace")
-            parts = buffer.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            buffer = parts.pop()
-            for part in parts:
-                self._append(part)
-        if buffer:
-            self._append(buffer)
-        return await proc.wait()
-
-    async def _run_steps(self) -> str:
-        import tempfile
-
-        focr = find_focr()
-        if focr is None:
-            self._append("Downloading the installer...")
-            with tempfile.TemporaryDirectory(prefix="focr-install-") as tmp:
-                script = await asyncio.to_thread(download_installer, Path(tmp))
-                code = await self._stream(installer_command(script))
-            if code != 0:
-                raise SetupError(
-                    f"The installer stopped with an error (code {code}). The "
-                    "messages above say why — nothing else was changed."
-                )
-            focr = find_focr()
-            if focr is None:
-                raise SetupError(
-                    "The installer finished, but the reader isn't where it "
-                    f"was expected ({binary_name()} was not found). Close "
-                    "this window, open a new terminal, and run setup again."
-                )
-        if not model_installed():
-            self._append(
-                f"Downloading the model ({MODEL_DOWNLOAD_SIZE}) — this is the "
-                "slow part."
-            )
-            code = await self._stream(pull_command(focr))
-            if code != 0:
-                raise SetupError(
-                    f"The model download stopped with an error (code {code}). "
-                    "The messages above say why. You can press the button "
-                    "again to resume — finished parts are not re-downloaded."
-                )
-        message = (
-            "Scanned-document reader installed. Scanned PDFs can now be read "
-            "(uv run startup.py --ocr)."
-        )
-        if shutil.which(binary_name()) is None:
-            message += (
-                " Open a new terminal window before using it, so this "
-                "computer picks up the new command."
-            )
-        return message
-
-    @work(exclusive=True)
-    async def _install(self) -> None:
-        try:
-            summary = await self._run_steps()
+            key = validate_key(self.query_one("#key", Input).value)
         except SetupError as exc:
-            if self.is_attached:
-                self._set_busy(False)
-                self._show_error(str(exc))
+            self._show_error(str(exc))
             return
-        except Exception as exc:  # a crash must not leave a stuck screen
-            if self.is_attached:
-                self._set_busy(False)
-                self._show_error(f"Something went wrong: {exc}")
-            return
-        if self.is_attached and not self._finished:
-            self.finish(summary)
+        self.finish(key)
 
-    @on(Button.Pressed, "#apply")
-    def _apply(self) -> None:
-        self._show_error("")
-        self._set_busy(True)
-        self._install()
+    @on(Input.Submitted)
+    def _input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#submit")
+    def _submit_pressed(self) -> None:
+        self._submit()
 
 
 class SetupApp(App[int]):
@@ -1086,17 +964,20 @@ class SetupApp(App[int]):
         self.notify(message)
 
     async def _task_ocr(self) -> None:
-        state = ocr_state()
-        if state == STATE_READY:
+        if ocr_state() == STATE_READY:
             self.notify(
-                "The scanned-document reader is already installed. Nothing "
-                "to change here."
+                "The scanned-document reader is already set up. To use a "
+                f"different key, edit the {ENV_KEY} line in {ENV_FILE}."
             )
             return
-        message = await self.push_screen_wait(OcrScreen(state))
-        if message is None:
+        key = await self.push_screen_wait(OcrScreen())
+        if key is None:
             return
-        self.notify(message)
+        save_key(key)
+        self.notify(
+            "Gemini API key saved. Scanned PDFs can now be read "
+            "(uv run startup.py --ocr)."
+        )
 
 
 def main() -> int:
