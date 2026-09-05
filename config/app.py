@@ -624,11 +624,11 @@ class SidecarScreen(TaskScreen["bool | None"]):
             )
             yield RadioSet(
                 RadioButton(
-                    "Visible — contract.docx.md shows up next to the original (recommended)",
+                    "Visible — contract.docx.md shows up next to the original",
                     value=self._current is not True,
                 ),
                 RadioButton(
-                    "Hidden — .contract.docx.md stays hidden in Finder and file lists",
+                    "Hidden — .contract.docx.md stays hidden in Finder and file lists (recommended)",
                     value=self._current is True,
                 ),
                 id="style",
@@ -923,7 +923,12 @@ class SetupApp(App[int]):
 
     async def _task_sidecar(self) -> None:
         try:
-            current: bool | None = repo_settings.read_sidecar_dotfiles()
+            # Default new setup to hidden copies; honor saved preferences.
+            current: bool | None = (
+                repo_settings.read_sidecar_dotfiles()
+                if "sidecar_dotfiles" in repo_settings.load_json_object()
+                else True
+            )
         except RepoSettingsError:
             current = None  # screen still opens; the save will surface the error
         value = await self.push_screen_wait(SidecarScreen(current))

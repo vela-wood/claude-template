@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,35 @@ from config.statusline import (
 # ---------------------------------------------------------------------------
 # Shared paths, settings writes, and command quoting
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (None, True),
+        ({"keep": "value"}, True),
+        ({"sidecar_dotfiles": False}, False),
+        ({"sidecar_dotfiles": True}, True),
+    ],
+)
+def test_sidecar_setup_default(tmp_path, monkeypatch, settings, expected):
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(repo_settings, "SETTINGS_PATH", path)
+    if settings is not None:
+        repo_settings.write_json_object(settings)
+
+    # Accept setup's initial choice without opening the interactive app.
+    async def accept(screen):
+        assert screen._current is expected
+        return screen._current
+
+    app = SimpleNamespace(push_screen_wait=accept, notify=lambda message: None)
+    asyncio.run(config_app.SetupApp._task_sidecar(app))
+
+    assert repo_settings.load_json_object() == {
+        **(settings or {}),
+        "sidecar_dotfiles": expected,
+    }
 
 
 def test_local_settings_path():
